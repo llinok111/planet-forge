@@ -16,6 +16,7 @@
 import { createNoise3D, fbm3, ridged3, warp3, mulberry32 } from './noise3d.js';
 import { deriveSeed } from './seed.js';
 import { growPlates, classifyBoundaries } from './plates.js';
+import { erodeHydraulic } from './hydrology.js';
 
 /**
  * Default shape parameters. These are the single source of truth: the UI schema
@@ -37,6 +38,8 @@ export const DEFAULT_SHAPE = {
   detailAmplitude: 0.016,
   erosionIterations: 26,
   erosionRate: 0.36,
+  hydraulicIterations: 2,
+  hydraulicStrength: 0.55,
 };
 
 function clamp(v, lo, hi) {
@@ -221,6 +224,18 @@ export function buildHeightField(geometry, shape = {}) {
     erodeThermal(geometry, elevation, cfg.erosionIterations, cfg.erosionRate);
   }
 
+  // --- 5b. hydraulic erosion ------------------------------------------------
+  // Ordered after the thermal pass on purpose: thermal relaxation produces the
+  // gentle slopes that rivers follow, so running it first gives the drainage
+  // network something to settle into instead of carving across fresh noise.
+  let hydraulic = null;
+  if (cfg.hydraulicIterations > 0) {
+    hydraulic = erodeHydraulic(geometry, elevation, {
+      iterations: cfg.hydraulicIterations,
+      strength: cfg.hydraulicStrength,
+    });
+  }
+
   // Re-anchor sea level after erosion. Erosion redistributes mass and therefore
   // shifts the height distribution; without this second pass the land fraction
   // drifts away from `continentBias` by several percent (measured: 0.52 -> 0.511,
@@ -264,6 +279,9 @@ export function buildHeightField(geometry, shape = {}) {
     boundary: bounds.boundary,
     seaLevel: 0,
     detail: geometryDetail(geometry),
+    // Catchment area per vertex, so shading can darken river beds and tests can
+    // assert a connected network exists.
+    riverFlow: hydraulic?.flow ?? null,
     stats: {
       minElevation: minH,
       maxElevation: maxH,
@@ -272,6 +290,9 @@ export function buildHeightField(geometry, shape = {}) {
       boundaryFractions: bounds.boundaryVertices / geometry.vertexCount,
       plateCount: plates.plateCount,
       seed: cfg.seed,
+      riverVertices: hydraulic?.riverVertices ?? 0,
+      hydraulicCarved: hydraulic?.carved ?? 0,
+      depressionsFilled: hydraulic?.fillInfo?.filledVertices ?? 0,
     },
   };
 }

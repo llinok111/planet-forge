@@ -19,6 +19,7 @@ import { join } from 'node:path';
 
 const FILES = [
   'src/atmosphere.js',
+  'src/atmosphere-pass.js',
   'src/rings.js',
   'src/clouds.js',
   'src/ocean.js',

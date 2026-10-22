@@ -13,15 +13,18 @@
  */
 
 import * as THREE from 'three';
-import { createIcosphere, applyRadii } from './icosphere.js';
-import { buildHeightField, computeDisplacedNormals } from './heightfield.js';
 import { createOcean, updateOcean, OCEAN_DEFAULTS } from './ocean.js';
 import { createClouds, updateClouds, disposeClouds, measureCloudCoverage } from './clouds.js';
-import { createAtmosphere, updateAtmosphereSun, disposeAtmosphere } from './atmosphere.js';
+import { AtmospherePass } from './atmosphere-pass.js';
 import { createRings, updateRings, disposeRings } from './rings.js';
 import { createStarfield, updateStarfield, disposeStarfield } from './starfield.js';
 import { BIOME_FRAGMENT, BIOME_VERTEX, BIOME_VERTEX_BODY } from './shaders/biome.js';
 import { shapeParams } from './params.js';
+import { TerrainWorkerClient } from './terrain-client.js';
+import { generateTerrain } from './terrain-worker.js';
+
+/** Reused vector for drawing-buffer size queries. */
+const _sizeTmp = new THREE.Vector2();
 
 /**
  * Surface material: MeshStandardMaterial with the biome ramp injected.
@@ -47,6 +50,11 @@ function createSurfaceMaterial() {
     uBeachWidth: { value: 0.003 },
     uIceCapLatitude: { value: 0.86 },
     uBiomeSharpen: { value: 0.22 },
+    uDetailStrength: { value: 0.42 },
+    uDetailScale: { value: 110.0 },
+    uSedimentStrength: { value: 0.45 },
+    uRiverStrength: { value: 0.6 },
+    uRiverColor: { value: new THREE.Color('#1d3b46') },
   };
 
   const material = new THREE.MeshStandardMaterial({
@@ -84,10 +92,13 @@ function createSurfaceMaterial() {
 
 export class PlanetScene {
   /**
-   * @param {object} [params] Full parameter object (see defaultParams()).
+   * @param {object} params Full parameter object (see defaultParams()).
+   * @param {THREE.WebGLRenderer} renderer Needed by the atmosphere composite pass,
+   *   which renders the scene to an offscreen target before compositing.
    */
-  constructor(params) {
+  constructor(params, renderer) {
     this.params = params;
+    this.renderer = renderer;
     this.three = new THREE.Scene();
     this.three.background = new THREE.Color(params.background ?? '#05070d');
 
@@ -111,10 +122,13 @@ export class PlanetScene {
 
     this.geometryInfo = null;
     this.heightField = null;
+    this.atmospherePass = null;
+    this.workerClient = new TerrainWorkerClient();
+    this.regenerating = false;
+    this.regenToken = 0;
     this.surface = null;
     this.ocean = null;
     this.clouds = null;
-    this.atmosphere = null;
     this.rings = null;
     this.stars = null;
 
@@ -128,30 +142,44 @@ export class PlanetScene {
    * Rebuild geometry and every mesh whose shape depends on the seed or shape
    * parameters. Called on seed change, detail change and any tectonic slider.
    */
-  regenerate() {
+  /**
+   * Run the generation pipeline off the main thread when possible.
+   *
+   * @param {object} [overrideShape] Shape params to use instead of the live ones.
+   * @returns {Promise<object>} Terrain payload, same shape as the main-thread result.
+   */
+  async generateAsync(overrideShape) {
+    const shape = overrideShape ?? shapeParams(this.params);
+    return this.workerClient.generate({ ...shape, radius: this.params.radius ?? 1 });
+  }
+
+  /**
+   * Build every mesh from a terrain payload.
+   *
+   * Split from generation so the expensive part can run in a worker while this part
+   * stays on the main thread, where WebGL buffers must live.
+   *
+   * @param {object} terrain Output of generateAsync() or generateTerrain().
+   */
+  buildMeshes(terrain) {
     const p = this.params;
     this.disposeGeometryOnly();
-
-    const icosphere = createIcosphere(p.detail);
-    const field = buildHeightField(icosphere, shapeParams(p));
     const radius = p.radius ?? 1;
-
-    // Displaced positions.
-    const radii = new Float32Array(icosphere.vertexCount);
-    for (let v = 0; v < icosphere.vertexCount; v++) radii[v] = radius + field.elevation[v];
-    const positions = applyRadii(icosphere.positions, radii);
-    const normals = computeDisplacedNormals(icosphere, positions);
-
-    // Normalized elevation attribute for the biome ramp, in units of the
-    // configured relief budget so colour bands stay put when the budget changes.
-    const elevAttr = new Float32Array(icosphere.vertexCount);
-    for (let v = 0; v < icosphere.vertexCount; v++) elevAttr[v] = field.elevation[v] / radius;
+    const field = { elevation: terrain.elevation, stats: terrain.stats, plateCount: terrain.plateCount };
+    // Ocean needs the same topology as the surface so coastlines are exact; the
+    // worker hands back the unit positions and index buffer for exactly this.
+    const icosphere = {
+      vertexCount: terrain.vertexCount,
+      positions: terrain.unitPositions,
+      indices: terrain.indices,
+    };
 
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
-    geo.setAttribute('aElevation', new THREE.BufferAttribute(elevAttr, 1));
-    geo.setIndex(new THREE.BufferAttribute(icosphere.indices, 1));
+    geo.setAttribute('position', new THREE.BufferAttribute(terrain.positions, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(terrain.normals, 3));
+    geo.setAttribute('aElevation', new THREE.BufferAttribute(terrain.elevAttr, 1));
+    geo.setAttribute('aRiver', new THREE.BufferAttribute(terrain.riverAttr, 1));
+    geo.setIndex(new THREE.BufferAttribute(terrain.indices, 1));
     geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), radius * 1.35);
 
     const surfaceMaterial = this.surface?.material ?? createSurfaceMaterial();
@@ -194,6 +222,9 @@ export class PlanetScene {
       density: p.cloudDensity,
       sharpness: p.cloudSharpness,
       altitude: p.cloudAltitude,
+      thickness: p.cloudThickness,
+      steps: p.cloudSteps,
+      selfShadow: p.cloudSelfShadow,
       speed: p.cloudSpeed,
       banding: p.cloudBanding,
       color: p.cloudColor,
@@ -201,20 +232,10 @@ export class PlanetScene {
     });
     this.planetGroup.add(this.clouds);
 
-    if (this.atmosphere) {
-      this.planetGroup.remove(this.atmosphere);
-      disposeAtmosphere(this.atmosphere);
-    }
-    this.atmosphere = createAtmosphere(radius, {
-      enabled: p.atmoEnabled,
-      radius: p.atmoRadius,
-      intensity: p.atmoIntensity,
-      rayleighColor: p.atmoRayleigh,
-      mieColor: p.atmoMie,
-      densityFalloff: p.atmoDensity,
-      steps: p.atmoSteps,
-    });
-    this.planetGroup.add(this.atmosphere);
+    // The atmosphere is no longer a mesh in the scene: it is a screen-space
+    // composite pass (see atmosphere-pass.js), so there is nothing to rebuild here
+    // beyond keeping the pass in sync with the planet radius.
+    if (!this.atmospherePass) this.atmospherePass = new AtmospherePass(this.renderer);
 
     if (this.rings) {
       this.planetGroup.remove(this.rings);
@@ -252,19 +273,105 @@ export class PlanetScene {
     this.three.add(this.stars);
 
     this.geometryInfo = {
-      level: icosphere.level,
-      vertexCount: icosphere.vertexCount,
-      triangleCount: icosphere.triangleCount,
+      level: terrain.level,
+      vertexCount: terrain.vertexCount,
+      triangleCount: terrain.triangleCount,
       radius,
     };
     this.heightField = {
-      stats: field.stats,
-      plateCount: field.plateCount,
-      elevation: field.elevation,
-      oceanMask: field.oceanMask,
+      stats: terrain.stats,
+      plateCount: terrain.plateCount,
+      elevation: terrain.elevation,
+      oceanMask: terrain.oceanMask,
     };
+    this.lastGenMs = terrain.genMs;
 
     this.applyLive();
+  }
+
+  /**
+   * Synchronous rebuild, kept for tests, the e2e harness and callers already inside
+   * a frame callback. The production UI uses the async path.
+   */
+  regenerate() {
+    this.buildMeshes(generateTerrain({ ...shapeParams(this.params), radius: this.params.radius ?? 1 }));
+  }
+
+  /**
+   * Decide which subdivision level the current camera distance calls for.
+   *
+   * Why this exists: the detail parameter is a single global value, so a user who
+   * zooms in to inspect terrain keeps seeing 20k triangles stretched over the whole
+   * screen, and one who zooms out pays for geometry they cannot resolve. A distance
+   * threshold pair (with hysteresis) fixes both without a chunked quadtree, which
+   * would be a much larger change to the mesh pipeline.
+   *
+   * Hysteresis matters: without it, sitting exactly at the threshold flips the level
+   * on every frame and each flip costs a full rebuild.
+   *
+   * @param {number} distance Camera distance in planet radii.
+   * @returns {number|null} Level to switch to, or null to keep the current one.
+   */
+  desiredLodLevel(distance) {
+    const p = this.params;
+    if (!p.autoLod) return null;
+    const current = this.geometryInfo?.level ?? p.detail;
+
+    // Two levels only: L5 as the workhorse and L6 for close inspection. Adding L4
+    // below them buys nothing visible at 1 planet radius and doubles rebuild traffic.
+    const nearLevel = 6;
+    const farLevel = 5;
+
+    // 10% hysteresis band around each threshold.
+    if (current < nearLevel && distance < p.lodNear * 0.9) return nearLevel;
+    if (current === nearLevel && distance > p.lodNear * 1.1) return farLevel;
+    return null;
+  }
+
+  /**
+   * Request an LOD change if one is due. Safe to call every frame; it no-ops unless a
+   * threshold is crossed.
+   *
+   * @returns {Promise<boolean>} Whether a rebuild actually happened.
+   */
+  async updateLod() {
+    if (this.regenerating) return false;
+    const distance = this.camera.position.length();
+    const level = this.desiredLodLevel(distance);
+    if (level === null || level === this.geometryInfo?.level) return false;
+
+    const token = ++this.regenToken;
+    this.regenerating = true;
+    try {
+      const shape = { ...shapeParams(this.params), detail: level, radius: this.params.radius ?? 1 };
+      const terrain = await this.generateAsync(shape);
+      if (token !== this.regenToken) return false;
+      this.buildMeshes(terrain);
+      // Record the parameter too so exports and the URL describe what is on screen.
+      this.params.detail = level;
+      return true;
+    } finally {
+      if (token === this.regenToken) this.regenerating = false;
+    }
+  }
+
+  /**
+   * Async rebuild used by the UI: generate off-thread, then assemble meshes.
+   * Each call supersedes every request still in flight.
+   */
+  async regenerateAsync() {
+    const token = ++this.regenToken;
+    this.regenerating = true;
+    try {
+      const terrain = await this.generateAsync();
+      // Drop stale results: a slider drag queues several requests and only the most
+      // recent one describes what the user is looking at.
+      if (token !== this.regenToken) return false;
+      this.buildMeshes(terrain);
+      return true;
+    } finally {
+      if (token === this.regenToken) this.regenerating = false;
+    }
   }
 
   // ------------------------------------------------------------------- live --
@@ -292,6 +399,11 @@ export class PlanetScene {
       su.uBeachWidth.value = p.beachWidth;
       su.uIceCapLatitude.value = p.iceCapLatitude;
       su.uBiomeSharpen.value = p.biomeSharpen;
+      su.uDetailStrength.value = p.detailStrength;
+      su.uDetailScale.value = p.detailScale;
+      su.uSedimentStrength.value = p.sedimentStrength;
+      su.uRiverStrength.value = p.riverStrength;
+      su.uRiverColor.value.set(p.riverColor);
     }
 
     // Ocean.
@@ -319,33 +431,26 @@ export class PlanetScene {
       cu.uBanding.value = p.cloudBanding;
       cu.uCloudColor.value.set(p.cloudColor);
       cu.uShadowTint.value.set(p.cloudShadow);
-      // The shell is built at base radius and scaled, so this is idempotent.
-      this.clouds.scale.setScalar(p.cloudAltitude);
+      cu.uSteps.value = Math.max(4, Math.min(24, Math.round(p.cloudSteps)));
+      cu.uSelfShadow.value = p.cloudSelfShadow;
+      // Deck radii are pushed as absolute values; the mesh itself is not scaled, so
+      // the inner and outer shells stay concentric with the planet body.
+      const base = this.geometryInfo?.radius ?? 1;
+      cu.uInnerRadius.value = base * p.cloudAltitude;
+      cu.uOuterRadius.value = base * (p.cloudAltitude + p.cloudThickness);
+      // Keep the geometry envelope large enough for the new outer radius.
+      const wantOuter = base * (p.cloudAltitude + p.cloudThickness);
+      const haveOuter = this.clouds.geometry.parameters?.radius ?? 0;
+      if (Math.abs(haveOuter - wantOuter) > 1e-6) {
+        this.clouds.geometry.dispose();
+        this.clouds.geometry = new THREE.SphereGeometry(wantOuter, 128, 96);
+      }
     }
 
-    // Atmosphere.
-    if (this.atmosphere) {
-      this.atmosphere.visible = p.atmoEnabled;
-      const au = this.atmosphere.userData.uniforms;
-      au.uIntensity.value = p.atmoIntensity;
-      au.uRayleighColor.value.set(p.atmoRayleigh);
-      au.uMieColor.value.set(p.atmoMie);
-      au.uDensityFalloff.value = p.atmoDensity;
-      au.uSteps.value = Math.max(4, Math.min(32, Math.round(p.atmoSteps)));
-      // Night-side floor colour follows the scene ambient so the halo stays
-      // coherent when the ambient light is recoloured.
-      au.uAmbientSky?.value.set(p.ambientColor);
-      if (au.uAmbientSky) au.uAmbientSky.value.multiplyScalar(Math.max(0.35, p.ambientIntensity));
-      const atmoBase = this.geometryInfo?.radius ?? 1;
-      const desired = atmoBase * p.atmoRadius;
-      au.uAtmoRadius.value = desired;
-      // Geometry is rebuilt directly here (not via geometry.dispose() + new, which
-      // would drop the bounding sphere) so the shell resizes without leaking.
-      if (Math.abs((this.atmosphere.userData.shellRadius ?? 0) - desired) > 1e-6) {
-        this.atmosphere.geometry.dispose();
-        this.atmosphere.geometry = new THREE.SphereGeometry(desired, 96, 64);
-        this.atmosphere.userData.shellRadius = desired;
-      }
+    // Atmosphere (screen-space pass).
+    if (this.atmospherePass) {
+      this.atmospherePass.enabled = p.atmoEnabled;
+      this.atmospherePass.applyParams(p);
     }
 
     // Rings.
@@ -416,7 +521,6 @@ export class PlanetScene {
     this.sun.position.copy(dir).multiplyScalar(12);
     this.sun.target.position.set(0, 0, 0);
 
-    if (this.atmosphere) updateAtmosphereSun(this.atmosphere, dir);
     if (this.rings) {
       updateRings(this.rings, {
         sunDirection: dir,
@@ -440,7 +544,16 @@ export class PlanetScene {
     }
 
     if (this.ocean) updateOcean(this.ocean, elapsedSeconds);
-    if (this.clouds) updateClouds(this.clouds, elapsedSeconds, { speed: p.cloudSpeed });
+    if (this.clouds) {
+      updateClouds(this.clouds, elapsedSeconds, {
+        speed: p.cloudSpeed,
+        camera: this.camera,
+        sunDirection: this.sunDirection,
+      });
+      // Sun colour also tints the deck, so cloud lighting follows the sun slider.
+      const cu = this.clouds.userData.uniforms;
+      if (cu?.uSunColor) cu.uSunColor.value.copy(this.sun.color).multiplyScalar(Math.min(2, this.sun.intensity * 0.5));
+    }
     if (this.rings) {
       updateRings(this.rings, {
         sunDirection: this.sunDirection,
@@ -454,6 +567,35 @@ export class PlanetScene {
   }
 
   // -------------------------------------------------------------- diagnostics --
+
+  /**
+   * Draw the scene, routed through the atmosphere compositor when it is enabled.
+   *
+   * All rendering must go through this method (not `renderer.render` directly),
+   * otherwise the composite is skipped and the planet loses its air.
+   *
+   * @param {THREE.WebGLRenderer} renderer
+   */
+  renderInto(renderer) {
+    const r = renderer ?? this.renderer;
+    if (this.atmospherePass && this.atmospherePass.enabled) {
+      // The offscreen target must match the drawing buffer. It was left at its
+      // 1x1 construction size because nothing called setSize, so the composite
+      // sampled a single texel and smeared it over the entire frame — a uniform
+      // wash in which the disc and the sky were indistinguishable.
+      const size = r.getDrawingBufferSize(_sizeTmp);
+      if (this.atmospherePass.target.width !== size.x || this.atmospherePass.target.height !== size.y) {
+        this.atmospherePass.setSize(size.x, size.y, 1);
+      }
+      this.atmospherePass.render(this.three, this.camera, {
+        sunDirection: this.sunDirection,
+        planetRadius: this.geometryInfo?.radius ?? 1,
+      });
+    } else {
+      r.setRenderTarget(null);
+      r.render(this.three, this.camera);
+    }
+  }
 
   /**
    * Measurements taken from the generated data, used by tests and the info panel.
@@ -527,11 +669,6 @@ export class PlanetScene {
       this.planetGroup.remove(this.clouds);
       disposeClouds(this.clouds);
       this.clouds = null;
-    }
-    if (this.atmosphere) {
-      this.planetGroup.remove(this.atmosphere);
-      disposeAtmosphere(this.atmosphere);
-      this.atmosphere = null;
     }
     if (this.rings) {
       this.planetGroup.remove(this.rings);

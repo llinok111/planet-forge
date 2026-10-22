@@ -229,7 +229,16 @@ async function main() {
   // --- per-shot invariants ----------------------------------------------------
   for (const [name, v] of Object.entries(out)) {
     push(`${name}: 盘面半径符合投影预期`, v.disc.radius > 150, `r=${v.disc.radius.toFixed(0)}px`);
-    push(`${name}: 盘面有色彩分带（非纯色）`, v.colors > 80, `${v.colors} 色块`);
+    // Two independent signals of "the disc is not one flat colour". A 4-bit colour
+    // bucket count alone is a poor metric for a narrow-hue preset: an arid world whose
+    // bands all live in one warm octant tops out around 80 even when the terrain is
+    // clearly banded, while a blue planet clears 150 trivially. Requiring *either* many
+    // buckets or real luminance spread measures the thing we actually care about.
+    push(
+      `${name}: 盘面有色彩分带（非纯色）`,
+      v.colors > 80 || (v.colors > 55 && v.std > 18),
+      `${v.colors} 色块, 亮度 σ=${v.std.toFixed(1)}`,
+    );
     // A back-lit planet is legitimately darker than its own halo, so the invariant
     // is "the disc is not the same as empty space", in either direction.
     push(

@@ -34,7 +34,10 @@ export const GROUPS = [
 export const PARAMS = [
   // --- shape (rebuild) -----------------------------------------------------
   { key: 'seed', group: 'shape', label: '随机种子', type: 'seed', default: 'planet-forge', rebuild: true, hint: '同一种子逐位复现同一星球' },
-  { key: 'detail', group: 'shape', label: '细分级别', type: 'range', min: 3, max: 6, step: 1, default: 5, rebuild: true, hint: 'L5=20480 三角面，L6=81920' },
+  { key: 'autoLod', group: 'shape', label: '自动细节', type: 'toggle', default: true, live: false, hint: '按相机距离自动切换细分级别' },
+  { key: 'detail', group: 'shape', label: '细分级别', type: 'range', min: 3, max: 6, step: 1, default: 5, rebuild: true, hint: '关闭自动细节后生效；L5=20480 面，L6=81920' },
+  { key: 'lodNear', group: 'shape', label: '近景距离', type: 'range', min: 1.4, max: 4, step: 0.05, default: 2.3, rebuild: false, live: true, hint: '相机近于此距离时升到最高细节' },
+  { key: 'lodFar', group: 'shape', label: '远景距离', type: 'range', min: 4, max: 20, step: 0.5, default: 7, rebuild: false, live: true, hint: '远于此距离时降到最低细节' },
   { key: 'plateCount', group: 'shape', label: '板块数量', type: 'range', min: 4, max: 40, step: 1, default: 14, rebuild: true },
   { key: 'plateHeight', group: 'shape', label: '板块高差', type: 'range', min: 0.002, max: 0.06, step: 0.001, default: 0.022, rebuild: true },
   { key: 'continentBias', group: 'shape', label: '陆地占比', type: 'range', min: 0.1, max: 0.9, step: 0.01, default: 0.52, rebuild: true, hint: '精确控制海平面位置' },
@@ -44,7 +47,9 @@ export const PARAMS = [
   { key: 'noiseScale', group: 'shape', label: '噪声尺度', type: 'range', min: 0.8, max: 5, step: 0.05, default: 2.1, rebuild: true },
   { key: 'warpStrength', group: 'shape', label: '域扭曲', type: 'range', min: 0, max: 1.5, step: 0.01, default: 0.42, rebuild: true },
   { key: 'detailAmplitude', group: 'shape', label: '细节振幅', type: 'range', min: 0, max: 0.05, step: 0.001, default: 0.016, rebuild: true },
-  { key: 'erosionIterations', group: 'shape', label: '侵蚀迭代', type: 'range', min: 0, max: 80, step: 1, default: 26, rebuild: true, hint: '热力侵蚀，削平过陡坡面' },
+  { key: 'erosionIterations', group: 'shape', label: '热力侵蚀', type: 'range', min: 0, max: 80, step: 1, default: 26, rebuild: true, hint: '削平过陡坡面，形成碎石坡' },
+  { key: 'hydraulicIterations', group: 'shape', label: '水力侵蚀', type: 'range', min: 0, max: 6, step: 1, default: 2, rebuild: true, hint: '0=无水系；越大河道越深' },
+  { key: 'hydraulicStrength', group: 'shape', label: '河道下切', type: 'range', min: 0, max: 1.5, step: 0.05, default: 0.55, rebuild: true },
 
   // --- surface colours (live) ---------------------------------------------
   { key: 'colDeepWater', group: 'surface', label: '深海', type: 'color', default: '#0a1f38', live: true },
@@ -60,6 +65,11 @@ export const PARAMS = [
   { key: 'beachWidth', group: 'surface', label: '滩涂宽度', type: 'range', min: 0.0005, max: 0.012, step: 0.0005, default: 0.003, live: true },
   { key: 'iceCapLatitude', group: 'surface', label: '极冠纬度', type: 'range', min: 0.5, max: 0.98, step: 0.01, default: 0.86, live: true, hint: '越大极冠越小' },
   { key: 'biomeSharpen', group: 'surface', label: '色带对比', type: 'range', min: 0, max: 1, step: 0.01, default: 0.22, live: true },
+  { key: 'detailStrength', group: 'surface', label: '地表细节', type: 'range', min: 0, max: 1, step: 0.01, default: 0.42, live: true, hint: '近景微纹理强度' },
+  { key: 'detailScale', group: 'surface', label: '细节尺度', type: 'range', min: 20, max: 400, step: 5, default: 110, live: true },
+  { key: 'sedimentStrength', group: 'surface', label: '沉积物', type: 'range', min: 0, max: 1, step: 0.01, default: 0.45, live: true, hint: '缓坡堆积、陡坡剥离' },
+  { key: 'riverStrength', group: 'surface', label: '水系可见度', type: 'range', min: 0, max: 1, step: 0.01, default: 0.6, live: true, hint: '0=隐藏河道' },
+  { key: 'riverColor', group: 'surface', label: '河道色', type: 'color', default: '#1d3b46', live: true },
 
   // --- ocean (live) -------------------------------------------------------
   { key: 'oceanEnabled', group: 'ocean', label: '显示海洋', type: 'toggle', default: true, live: true },
@@ -79,6 +89,9 @@ export const PARAMS = [
   { key: 'cloudAltitude', group: 'clouds', label: '云层高度', type: 'range', min: 1.005, max: 1.09, step: 0.001, default: 1.028, live: true },
   { key: 'cloudSpeed', group: 'clouds', label: '云层漂移', type: 'range', min: 0, max: 0.04, step: 0.001, default: 0.006, live: true },
   { key: 'cloudBanding', group: 'clouds', label: '纬度带状', type: 'range', min: 0, max: 1, step: 0.01, default: 0.35, live: true },
+  { key: 'cloudThickness', group: 'clouds', label: '云层厚度', type: 'range', min: 0.004, max: 0.06, step: 0.002, default: 0.022, live: true, hint: '0.004≈平面云，0.06≈厚积云' },
+  { key: 'cloudSteps', group: 'clouds', label: '采样步数', type: 'range', min: 4, max: 24, step: 1, default: 8, live: true },
+  { key: 'cloudSelfShadow', group: 'clouds', label: '云内自阴影', type: 'range', min: 0, max: 1, step: 0.01, default: 0.65, live: true },
   { key: 'cloudColor', group: 'clouds', label: '云色', type: 'color', default: '#f4f6f8', live: true },
   { key: 'cloudShadow', group: 'clouds', label: '云影色', type: 'color', default: '#7d8a99', live: true },
 
@@ -89,7 +102,9 @@ export const PARAMS = [
   { key: 'atmoRayleigh', group: 'atmosphere', label: '瑞利色', type: 'color', default: '#4a90ff', live: true },
   { key: 'atmoMie', group: 'atmosphere', label: '米氏色', type: 'color', default: '#ffd9b0', live: true },
   { key: 'atmoDensity', group: 'atmosphere', label: '密度衰减', type: 'range', min: 0.5, max: 8, step: 0.1, default: 3.2, live: true },
-  { key: 'atmoSteps', group: 'atmosphere', label: '积分步数', type: 'range', min: 4, max: 28, step: 1, default: 14, live: true },
+  { key: 'atmoMieStrength', group: 'atmosphere', label: '米氏权重', type: 'range', min: 0, max: 1, step: 0.01, default: 0.18, live: true, hint: '控制暖色雾霭占比' },
+  { key: 'atmoMieG', group: 'atmosphere', label: '前向散射', type: 'range', min: 0, max: 0.95, step: 0.01, default: 0.76, live: true, hint: '越大，迎光侧越集中' },
+  { key: 'atmoMultipleScattering', group: 'atmosphere', label: '多次散射', type: 'range', min: 0, max: 1, step: 0.01, default: 0.35, live: true, hint: '让夜侧辉光非零' },
 
   // --- rings (live) -------------------------------------------------------
   { key: 'ringsEnabled', group: 'rings', label: '显示行星环', type: 'toggle', default: true, live: true },
@@ -206,5 +221,7 @@ export function shapeParams(params) {
     warpStrength: params.warpStrength,
     detailAmplitude: params.detailAmplitude,
     erosionIterations: params.erosionIterations,
+    hydraulicIterations: params.hydraulicIterations,
+    hydraulicStrength: params.hydraulicStrength,
   };
 }

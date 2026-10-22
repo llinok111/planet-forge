@@ -33,7 +33,8 @@ const SHOTS = [
   {
     name: 'planet-terminator',
     viewport: { width: 1400, height: 1000 },
-    params: { sunAzimuth: 172, sunElevation: 8, ringTilt: 18, cloudCoverage: 0.55, starCount: 3000 },
+    params: { sunAzimuth: 168, sunElevation: 14, ringTilt: 18, cloudCoverage: 0.25, starCount: 3000,
+      mountainHeight: 0.1, biomeSharpen: 0.45, detailStrength: 0.6 },
     camera: [0, 0.7, 4.2],
     ui: false,
   },
@@ -59,12 +60,16 @@ const SHOTS = [
     viewport: { width: 1200, height: 900 },
     params: {
       sunAzimuth: 80, sunElevation: 26, continentBias: 0.82, plateCount: 26,
-      mountainHeight: 0.1, riftDepth: 0.05, cloudCoverage: 0.12, iceCapLatitude: 0.98, starCount: 2000,
-      // Warm palette spread across ALL bands, not just grass/forest. Leaving the
-      // snow/ice/rock bands at their cool defaults meant the high-albedo tops still
-      // averaged blue and the preset did not read as arid.
-      colGrass: '#8a7440', colForest: '#6d5a2c', colBeach: '#c0a070',
-      colRock: '#8a7a5e', colSnow: '#d6c9a4', colIce: '#e0d4b0', colSeaBed: '#3a3020', colShallow: '#5a6b5c',
+      // Warm palette with real tonal RANGE, not eight near-identical tans. The earlier
+      // values (#8a7440..#e0d4b0) measured only ~20 distinct 4-bit colour buckets on
+      // the disc: technically "warm" but visually a single mud tone. Bands now span
+      // dark basalt to pale sandstone, which is also what a real arid planet looks like.
+      mountainHeight: 0.155, riftDepth: 0.065, plateHeight: 0.046, erosionIterations: 6,
+      cloudCoverage: 0.05, iceCapLatitude: 0.98, starCount: 2000,
+      detailStrength: 0.95, sedimentStrength: 0.95, biomeSharpen: 0.62,
+      colGrass: '#9c7f3f', colForest: '#5c4a24', colBeach: '#d8bc84',
+      colRock: '#6b5f52', colSnow: '#efe6d2', colIce: '#f2ecdd',
+      colSeaBed: '#2b1d14', colShallow: '#7a6a4a',
       // Deserts have no ocean to speak of and a thin atmosphere.
       oceanEnabled: false, atmoIntensity: 0.55, atmoDensity: 5.2,
     },
@@ -74,7 +79,10 @@ const SHOTS = [
   {
     name: 'l6-detail',
     viewport: { width: 1200, height: 900 },
-    params: { detail: 6, sunAzimuth: 118, sunElevation: 14, ringsEnabled: false, cloudCoverage: 0.25, starCount: 1500 },
+    // autoLod must be off here: with it on, the LOD controller legitimately drops
+    // back to L5 because the camera sits at 2.4 radii, and the shot would then not
+    // demonstrate L6 at all (measured: it captured 10242 vertices, not 40962).
+    params: { detail: 6, autoLod: false, sunAzimuth: 118, sunElevation: 14, ringsEnabled: false, cloudCoverage: 0.25, starCount: 1500 },
     camera: [0, 0.5, 2.4],
     ui: false,
     noShadow: true,

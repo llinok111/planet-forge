@@ -53,6 +53,7 @@ let lastFrameTime = 0;
 let frameCount = 0;
 let fpsAccum = 0;
 let lastGenMs = 0;
+let lastLodCheck = 0;
 
 function showToast(message, isError = false) {
   toastEl.textContent = message;
@@ -97,6 +98,11 @@ function resize() {
   renderer.setSize(w, h, false);
   planet.camera.aspect = w / h;
   planet.camera.updateProjectionMatrix();
+  // Keep the atmosphere composer's offscreen target in step with the canvas.
+  if (planet.atmospherePass) {
+    const size = renderer.getDrawingBufferSize(new THREE.Vector2());
+    planet.atmospherePass.setSize(size.x, size.y, 1);
+  }
   planet.pixelRatio = renderer.getPixelRatio();
 }
 
@@ -107,7 +113,7 @@ function buildPlanet({ initial = false } = {}) {
   const cameraPosition = planet ? planet.camera.position.clone() : null;
 
   if (planet) planet.dispose();
-  planet = new PlanetScene(params);
+  planet = new PlanetScene(params, renderer);
   planet.pixelRatio = renderer.getPixelRatio();
 
   // Preserve the user's viewpoint across regenerations; only the first build
@@ -128,6 +134,32 @@ function buildPlanet({ initial = false } = {}) {
   if (!initial) showToast(`已重新生成 · ${lastGenMs.toFixed(0)} ms`);
 }
 
+/**
+ * Regenerate geometry without blocking the main thread.
+ *
+ * Generation runs in the terrain worker (or on the main thread if workers are
+ * unavailable); only mesh assembly happens here. The camera and controls survive,
+ * so the viewpoint is preserved across a rebuild.
+ */
+async function rebuildPlanetAsync() {
+  const started = performance.now();
+
+  if (!planet) {
+    planet = new PlanetScene(params, renderer);
+    planet.pixelRatio = renderer.getPixelRatio();
+    planet.camera.position.set(0, 0.95, 3.35);
+    planet.camera.lookAt(0, 0, 0);
+  } else {
+    // Keep the framing the user chose.
+    await planet.regenerateAsync();
+  }
+
+  if (!controls) controls = setupControls(planet.camera, renderer.domElement);
+  lastGenMs = performance.now() - started;
+  resize();
+  updateHud();
+}
+
 /** Regenerate after a shape change, yielding to the browser so the overlay paints. */
 function regenerateShape(changedKey) {
   // `ready` must drop *before* the rebuild begins. Leaving it true lets an external
@@ -137,9 +169,9 @@ function regenerateShape(changedKey) {
   setLoading(true);
   requestAnimationFrame(() => {
     // Second rAF: guarantees the overlay has been painted before the sync work.
-    requestAnimationFrame(() => {
+    requestAnimationFrame(async () => {
       try {
-        buildPlanet();
+        await rebuildPlanetAsync();
         window.planetForge.ready = true;
         syncUrl();
         if (changedKey && paramDef(changedKey)) {
@@ -189,6 +221,14 @@ function updateHud(force = false) {
   document.getElementById('hud-plates').textContent = String(m.plateCount);
   document.getElementById('hud-clouds').textContent = `${(m.cloudCoverage * 100).toFixed(0)}%`;
   document.getElementById('hud-gen').textContent = `${lastGenMs.toFixed(0)} ms`;
+  const lodEl = document.getElementById('hud-lod');
+  if (lodEl) {
+    const st = planet.heightField?.stats;
+    lodEl.textContent = `L${m.detailLevel}${planet.params.autoLod ? ' 自动' : ''}`;
+    void st;
+  }
+  const modeEl = document.getElementById('hud-mode');
+  if (modeEl) modeEl.textContent = planet.workerClient?.usingWorker ? 'Worker' : '主线程';
   void force;
 }
 
@@ -286,7 +326,7 @@ document.getElementById('btn-json').addEventListener('click', () => {
 });
 
 document.getElementById('btn-png').addEventListener('click', () => {
-  renderer.render(planet.three, planet.camera);
+  planet.renderInto(renderer);
   const dataUrl = renderer.domElement.toDataURL('image/png');
   const a = document.createElement('a');
   a.href = dataUrl;
@@ -313,8 +353,18 @@ function animate(now) {
   lastFrameTime = seconds;
 
   controls.update();
+
+  // Camera-distance LOD: checked a few times per second rather than every frame,
+  // because each triggered switch costs a full regeneration.
+  if (seconds - lastLodCheck > 0.6 && !planet.regenerating) {
+    lastLodCheck = seconds;
+    planet.updateLod().catch((err) => console.warn('LOD switch failed:', err));
+  }
+
   planet.update(seconds, delta);
-  renderer.render(planet.three, planet.camera);
+  // Route through the scene's own render entry point so the atmosphere composite
+  // pass runs; calling renderer.render directly would bypass it.
+  planet.renderInto(renderer);
 
   frameCount++;
   fpsAccum += delta;

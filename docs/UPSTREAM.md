@@ -92,3 +92,21 @@ grep -n "noise\.simplex\|noise\.perlin" src/noise.js
 1. **生成层不依赖渲染层**。上游 `src/` 全部无 three 依赖，本项目底部四层同样如此，使 Node 端测试成为可能。
 2. **确定性随机以"传入的函数"形式存在**（上游 `options.random`），而不是改写全局 `Math.random`。本项目用 `deriveSeed` 派生显式子种子，思想一致、粒度更细。
 3. **兼容性由上游测试守护**。上游有回归测试套件；本项目虽然替换了演示层，但保留了"新增能力一律 opt-in、不改默认行为"的纪律——例如地形生成默认参数与上游无冲突（上游代码未被调用链侵入）。
+
+---
+
+## 6. v2 的演进与上游的关系
+
+v2 的重构（物理化大气两遍渲染、体积云、水力侵蚀、Worker 异步生成、自动 LOD）**全部落在本项目新增的模块里**，没有改动上游任何一个 `src/` 文件：
+
+| v2 能力 | 落点 | 上游是否有对应实现 |
+|---|---|---|
+| 大气屏幕空间合成 | `src/atmosphere-pass.js`（新增，v1 的 `atmosphere.js` 保留但不再被引用） | 无。上游是纯地形库，不含大气 |
+| 体积云 | `src/clouds.js`（重写为 ShaderMaterial） | 无 |
+| 洼地填充 + 水力侵蚀 | `src/hydrology.js`（新增） | 无。上游只有地形生成，无侵蚀模块 |
+| Worker 异步生成 | `src/terrain-worker.js` / `terrain-client.js`（新增） | 无。上游是浏览器内同步生成 |
+| 自动 LOD | `src/planet.js` 的 `desiredLodLevel` / `updateLod` | 无。上游是单块地形，无 LOD |
+
+**为什么保留不再被引用的 `src/atmosphere.js`**：它是 v1 的实现，留作对照 —— `docs/LIMITS.md` 与 `docs/ARCHITECTURE.md` 里关于"加法混合做不到透射率分离"的论断，依据就是它的实测数据。删掉会让这些论证失去可复核的代码基础。
+
+这也符合上游"新增能力一律 opt-in"的纪律：v2 的新能力都是新增文件或替换本项目自己的文件，上游 17 个模块的字节内容未被触碰。

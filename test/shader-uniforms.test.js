@@ -143,3 +143,32 @@ test('着色器：GLSL 中不出现 JS 模板插值残留', () => {
   }
   assert.deepEqual([...new Set(problems)], [], `GLSL 中出现模板插值残留：${problems.join(', ')}`);
 });
+
+test('着色器：不使用 GLSL ES 保留字作为标识符', () => {
+  // Real defect: a local was named `patch`, which is reserved in GLSL ES. The
+  // compiler reported the error at the *use* site (a different line) with
+  // "Illegal use of reserved word", which reads like a syntax problem elsewhere.
+  // GLSL reserves a large set of future keywords; only the ones a person would
+  // plausibly pick as variable names are listed here.
+  const RESERVED = [
+    'patch', 'sample', 'subroutine', 'class', 'union', 'enum', 'typedef',
+    'template', 'this', 'packed', 'goto', 'inline', 'noinline', 'volatile',
+    'public', 'static', 'extern', 'external', 'interface', 'long', 'short',
+    'double', 'half', 'fixed', 'unsigned', 'superp', 'input', 'output',
+    'filter', 'sizeof', 'cast', 'namespace', 'using',
+  ];
+  const problems = [];
+  for (const file of FILES) {
+    const source = readFileSync(file, 'utf8');
+    for (const glsl of glslLiterals(source)) {
+      for (const word of RESERVED) {
+        // Declaration pattern: type followed by the identifier.
+        const decl = new RegExp(`\b(?:float|int|uint|bool|vec[234]|ivec[234]|mat[234]|sampler2D)\s+${word}\b`);
+        if (decl.test(glsl)) {
+          problems.push(`${file.replace(process.cwd(), '.')}: 使用了保留字 "${word}" 作为变量名`);
+        }
+      }
+    }
+  }
+  assert.deepEqual([...new Set(problems)], [], problems.join('\n'));
+});

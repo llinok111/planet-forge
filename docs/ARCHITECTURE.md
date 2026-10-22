@@ -3,27 +3,26 @@
 ## 1. 分层与依赖方向
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ main.js          渲染循环 / URL 同步 / DOM 事件            │
-├─────────────────────────────────────────────────────────┤
-│ ui.js / io.js    参数面板、GLB/JSON 导出                   │
-├─────────────────────────────────────────────────────────┤
-│ planet.js        场景编排：regenerate() / applyLive()      │
-├───────────────┬─────────────────┬───────────────────────┤
-│ surface       │ ocean/clouds/    │ atmosphere/rings/      │
-│ (planet.js    │ (three.js 网格)  │ stars (three.js 网格)   │
-│  内联材质)     │                 │                        │
-├───────────────┴─────────────────┴───────────────────────┤
-│ heightfield.js   plates.js   icosphere.js                │  ← 无 three 依赖
-│ noise3d.js       seed.js                                 │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ main.js          渲染循环 / URL 同步 / DOM 事件 / 自动 LOD 检查  │
+├──────────────────────────────────────────────────────────────┤
+│ ui.js / io.js    参数面板、GLB/JSON 导出                        │
+├──────────────────────────────────────────────────────────────┤
+│ planet.js        场景编排：generateAsync / buildMeshes / LOD    │
+├──────────────────┬───────────────────┬───────────────────────┤
+│ surface          │ ocean / clouds /  │ atmosphere-pass        │
+│ (内联材质)        │ rings / stars     │ (屏幕空间合成 pass)      │
+├──────────────────┴───────────────────┴───────────────────────┤
+│ heightfield.js   plates.js   icosphere.js   hydrology.js       │  ← 无 three 依赖
+│ noise3d.js       seed.js    terrain-worker.js                 │
+└──────────────────────────────────────────────────────────────┘
 ```
 
-**关键约束：底部四层不 import three.js。** 这不是风格洁癖，而是有实际回报：
+**关键约束：底部两层不 import three.js。** 这不是风格洁癖，而是有实际回报：
 
 - 确定性与拓扑可以在 Node 里零依赖验证（`npm test` 不需要 WebGL 上下文或 DOM）。
-- 生成逻辑可以在未来搬到 Worker 或服务端而不改动。
-- 测试跑得比浏览器端到端快一个数量级（单元测试 < 1 s，e2e ≈ 2 min）。
+- 整条生成管线可以原样搬进 Web Worker —— v2 的异步生成正是直接复用了这些模块（`terrain-worker.js` 同时被 worker 和主线程 import）。
+- 测试跑得比浏览器端到端快一个数量级（单元测试 < 2 s，e2e ≈ 2 min）。
 
 上游 `THREE.Terrain` 的 `src/` 17 个模块同样保持无 three 依赖，本项目沿用了这个惯例。
 
@@ -34,118 +33,178 @@
 ```
 params (单一真相源)
    │
-   ├─ shape 参数 ──► regenerate()
+   ├─ shape 参数 ──► regenerateAsync()
    │                    │
-   │                    ├─ createIcosphere(detail)          → 单位球顶点 + 索引 + CSR 邻接
-   │                    ├─ buildHeightField(geo, shape)     → elevation[] / oceanMask[]
-   │                    ├─ applyRadii + BufferGeometry      → 位移后的 position
-   │                    ├─ computeDisplacedNormals          → 解析法线
-   │                    └─ 重建 ocean / clouds / atmosphere / rings / stars
+   │                    ├─ [Worker] generateTerrain(shape)
+   │                    │     ├─ createIcosphere(detail)      → 单位球顶点 + 索引 + CSR 邻接
+   │                    │     ├─ buildHeightField(geo, shape) → elevation[] / riverFlow[]
+   │                    │     ├─ applyRadii                   → 位移后的 position
+   │                    │     └─ computeDisplacedNormals      → 解析法线
+   │                    │     （8 个 ArrayBuffer 以 transferable 回传）
+   │                    │
+   │                    ├─ [主线程] buildMeshes(terrain)      → BufferGeometry + 属性
+   │                    └─ 重建 ocean / clouds / rings / stars
    │
-   └─ 外观参数 ───► applyLive()   （只写 uniform / scale / visible）
+   ├─ 外观参数 ───► applyLive()      （只写 uniform / 半径 / visible）
+   │
+   └─ 相机距离 ───► updateLod()      （距离跨过阈值才触发一次重建，10% 迟滞）
 ```
 
-### 为什么分两条路径
+### 为什么分三条路径
 
 | 路径 | 触发 | 成本 | 延迟策略 |
 |---|---|---|---|
-| `regenerate()` | seed、detail、11 个构造参数 | L5 ≈ 71 ms，L6 ≈ 326 ms | 滑块 `input` 防抖 90 ms，`change` 立即提交 |
-| `applyLive()` | 颜色、开关、太阳方位、多数外观数值 | < 1 ms | 每个 `input` 立即执行 |
+| `regenerateAsync()` | seed、detail、14 个构造参数 | L5 ≈ 60 ms，L6 ≈ 282 ms（在 Worker 里） | 滑块 `input` 防抖 90 ms，`change` 立即提交 |
+| `applyLive()` | 颜色、开关、太阳方位、云厚、大气参数 | < 1 ms | 每个 `input` 立即执行 |
+| `updateLod()` | 相机距离跨阈值 | 同一次重建 | 每 0.6 s 最多检查一次，迟滞带防抖 |
 
 分错的后果很具体：把颜色放进取重建路径 → 拖动色板卡成幻灯片；把板块数放进 live 路径 → 滑块看起来"没反应"。
 
-重建时用两层 `requestAnimationFrame` 包裹，保证加载遮罩先绘制出来，否则 L6 重建会让页面无反馈卡住约 0.3 s。
+**异步重建的过期结果必须丢弃。** 拖动滑块会排队多次请求，只有最后一个描述了用户此刻看到的东西。实现用单调递增的 token：
+
+```js
+async regenerateAsync() {
+  const token = ++this.regenToken;
+  const terrain = await this.generateAsync();
+  if (token !== this.regenToken) return false;   // 被更新的一次取代了
+  this.buildMeshes(terrain);
+  return true;
+}
+```
+
+同时 `planetForge.ready` 必须在重建**开始前**置 `false`（不是结束后才置 `true`），否则外部观察者会在旧场景上读数据 —— 这个坑在 v1 的 e2e 里造成过一次稳定复现的假失败，详见 `docs/TESTING.md`。
 
 ---
 
 ## 3. 高度场合成顺序（顺序本身是设计）
 
 ```
-1. 板块生长          多源 BFS，保证连通
-2. 板块基线          海陆 + 每板块随机抖动 + 域扭曲 fBm 宏形
-3. 边界构造          汇聚→脊带，离散→裂谷，转换→微抬升
-4. 细节 fBm          高频，独立振幅
-5. 首次海平面定位     按分位数求出陆地占比目标
-6. 归一化            把构造项压到 amplitude 预算，使参数可比
-7. 热力侵蚀          碎石坡、平谷底
-8. **二次海平面重锚**  侵蚀改变分布后重新定位，使陆地占比精确
-9. 海洋掩码 + 半径缩放
+1. 板块生长            plateOf[] + plateSizes[]
+2. 板块高度            plateHeight * 相对质心方向
+3. 边界构造            汇聚→山脊、离散→裂谷、转换→轻微抬升
+4. 域扭曲 fBm 细节     低频先偏移坐标，避免海岸线贴板块边界
+5. 首次海平面重锚      按 continentBias 分位数定 0 点
+6. 归一化             把最大起伏缩放到 (plateHeight+mountainHeight+detail) 预算
+7. 热力侵蚀           削平陡坡（碎石坡、平谷底）
+8. 洼地填充            priority-flood，让每个陆地点都能流向海
+9. 水力侵蚀            流量×坡度下切河道
+10. 二次海平面重锚      侵蚀改变了分布，重新按分位数定 0 点
 ```
 
-第 7 步之后必须再做第 8 步。实测：只做一次定位时，`continentBias = 0.52` 实际得到 0.511，`0.20` 得到 0.166。差异来自侵蚀把质量重新分布。二次重锚后误差降到 < 0.01%（只剩顶点量子化误差，1/10242 ≈ 0.01%）。
+三个顺序决策值得单独说明：
+
+**7 在 9 之前**：热力侵蚀先产生缓坡，水系才有地方安定下来。反过来会让河道横穿新鲜噪声，形成不自然的直角渠。
+
+**8 是 9 的前提，不是可选项**：没有洼地填充时，排水网是碎的。实测 L4 网格：239 个汇点、146 个已在海平面、最大集水区仅 42/2562 顶点。填充后陆地汇点 = 0，最大集水区 = 110，主河道才出现。
+
+**10 必须在最后**：细节噪声与两级侵蚀都在移动高度分布。把重锚放在第 5 步时，`continentBias=0.52` 实测得到 0.511、`0.20` 得到 0.166 —— 偏差来自后续步骤。放到第 10 步后误差 < 0.01%（等于顶点量化精度）。
 
 ---
 
 ## 4. 二十面体细分的性能陷阱
 
-原实现（沿用常见写法）在插入每个中点时：
+原实现每插入一个中点就 `new Float64Array(len+3)` 并整体复制 —— O(n²)。
 
 ```js
+// 错：每次插入中点都复制整个数组
 const grown = new Float64Array(positions.length + 3);
-grown.set(positions);           // 复制全部已有点
+grown.set(positions);
+
+// 对：预分配 10·4^L + 2 个顶点，一次填充
+const totalVerts = 10 * (4 ** lvl) + 2;
 ```
 
-每级有 E 个中点，总成本 O(V²)。实测 L5 = 562 ms，L6 = 3 657 ms，占整条管线 80% 以上。
+实测 L5 562 ms → 21 ms，L6 3 657 ms → 112 ms（15–32×）。
 
-改为预分配 `10·4^L + 2` 个顶点后一次填充，L5 = 31 ms，L6 = 129 ms。拓扑校验（欧拉示性数、邻接表长度 = 2E）在测试中保持通过。
+### 邻接表的空洞
 
-邻接表也重写过一次：最初按"每三角形 2 个槽位"分配再去重，留下大量 `-1` 空洞（残留 = 6V−12），侵蚀循环会读到无效邻居。改成**先去重无向边，再建 CSR**，`adjacency.length` 严格等于 2E。
+按"每个三角形给每个顶点 2 个槽位"分配再去重，会留下 `6V−12` 个 `-1` 空洞（L5 = 61 440 个），侵蚀循环会读到无效邻居。正确做法是先去重无向边、再建 CSR：
+
+```
+保证：sum(degree) == 2E，无 -1，无重复，平均度 = 6（正二十面体球的标准值）
+```
+
+这条断言在 `test/geometry.test.js` 里对 L0–L6 逐级校验。
 
 ---
 
 ## 5. 种子体系
 
 ```
-master seed (字符串)
-   │ FNV-1a
-   ▼
-32-bit master ──┬─ ^0x9e3779b1 → mix → tectonics
-                ├─ ^0x85ebca6b → mix → detail
-                ├─ ^0xc2b2ae35 → mix → erosion
-                ├─ ...            ├─ ocean / clouds / atmosphere / rings / stars / scatter
+"my planet" ──FNV-1a──► master(uint32)
+                          │
+        ┌─────────────────┼──────────────────┐
+   tectonics        detail      erosion    … (9 条)
 ```
 
-9 条独立流。意义：改云层参数不会重排地形，反之亦然。用 XOR + 乘法混合而不是简单加法，避免 `"a"+"b"` 与 `"ab"` 在低位碰撞。
-
-数字 seed 直接用其 32 位值，字符串 seed 先哈希——所以 `"12345"` 与 `12345` 是**两颗不同的星球**（测试中显式断言，避免"以为等价"的误解）。
+- 同一 master 派生出的子系统流**互不干扰**：改云层参数不会改变地形，因为地形用的是 `tectonics`/`detail`/`erosion` 三支。
+- 数字种子按数值使用，字符串走哈希 —— 因此 `12345` 与 `'12345'` **不相等**。这是刻意的：数字来自程序化循环，字符串来自用户输入，让它们撞在一起只会让复现变得含糊。
+- 3D Simplex 在格点处恒为 0（Gustavson 实现的已知性质），球面采样若落在格点上会出现细小"零值斑"。修法是给采样空间加一段随种子变化的无理数偏移。修复前后对比：20 000 个球面样本中精确零值 有 → 0 个。
 
 ---
 
 ## 6. 着色器注入策略
 
-三处注入点，各有原因：
+地表材质是 `MeshStandardMaterial` + `onBeforeCompile` 注入，不是自己写整套 PBR：
 
-| 位置 | 注入内容 | 为什么不用原生 ShaderMaterial |
-|---|---|---|
-| 地表 `MeshStandardMaterial` | 分带着色（`color_fragment`）、坡度（`dFdx/dFdy`） | 保留 three 的 PBR 光照、色调映射，太阳颜色/强度滑块自动生效 |
-| 云层 `MeshStandardMaterial` | 3D 噪声覆盖率（`map_fragment`） | 需要受光照影响（云影随太阳方位变化） |
-| 大气 / 环带 | 完整 `ShaderMaterial` | 需要自定义散射积分与混合模式，无可复用 PBR 语义 |
+```js
+material.onBeforeCompile = (shader) => {
+  shader.uniforms.uDetailStrength = uniforms.uDetailStrength;
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <begin_vertex>', `#include <begin_vertex>\n${BIOME_VERTEX_BODY}`);
+  shader.fragmentShader = shader.fragmentShader
+    .replace('void main() {', `${BIOME_FRAGMENT_HEAD}\nvoid main() {`)
+    .replace('vec3 outgoingLight =', `vec3 outgoingLight = ${BIOME_FRAGMENT_BODY}`);
+};
+```
 
-地表分带在片元里做而不是烘焙纹理：任意缩放不模糊、参数改动即时、显存与分辨率解耦。
+两条硬规则：
 
-**坡度**用世界位置的屏幕空间导数（`dFdx`/`dFdy`）计算，而不是逐顶点属性——顶点密度变化（L3→L6）不会改变坡度的视觉定义。
+1. **注入块用 `in` 而不是 `attribute`。** three.js 只对自己处理的源码做 `attribute → in` 重写；字符串拼接进去的块会原样到达驱动，而 `attribute` 在 GLSL ES 3.00 里是保留字。踩过一次，报错指向的是使用处而不是声明处。
+2. **模板字符串内不能出现裸反引号**，注释里引用变量名也不行。这个坑在本项目里踩了 5 次，每次都表现为下游几百行的 `Unexpected identifier`。现在由 `test/template-guard.test.js` 静态拦截。
 
 ---
 
-## 7. 大气的关键实现决策
+## 7. 大气：为什么必须是两遍渲染
 
-1. **加法混合 + 关闭深度测试**。散射只增加光，不遮挡后方，这是发射壳层的正确模式。代价是着色器必须把密度折进颜色（没有独立 opacity 阶段）。
-2. **射线与球体解析求交**，不用插值片元位置。BackSide 渲染时片元在壳层远壁，掠射时插值位置不可靠，视觉上表现为辉光被切掉。
-3. **积分区间是整条壳弦**，行星体内采样用 `step()` 把密度置零，而不是缩短积分区间。缩短会让夜侧边缘完全消失（实测边缘 12,9,7，与背景 5,7,13 无法区分）。
-4. **`limb` 归一化用最大弦长**（`2 × 壳厚`），并混入 `impact` 参数几何量。早期归一化到 `0.9 × rAtmo` 时，掠射句柄最多只到 0.3，边缘永远不够亮。
-5. **积分步数无关性**：累加器是 `密度 × 步长`，输出再乘 `uSteps`。否则 4/14/28 步会得到 13/109/110 的亮度（实测），滑块会变成亮度调节器。
+v1 用加性混合的球壳网格，结构上就做不到"透射"和"入射光"分离：加法只加不减，因此面朝视线的分量必须硬压到 0.012 级，否则整片盘面被染成蓝白（实测 arid 预设被染成 RGB [213,216,233]）。
+
+v2 改为：
+
+```
+pass 1  renderer.setRenderTarget(target); renderer.render(scene, camera)
+pass 2  全屏 quad：解析求解射线与球壳/行星的交点 → τ(λ) → 合成
+```
+
+合成公式（对命中行星的射线）：
+
+```
+T      = exp(-τ_total)          // 透射率，按波长不同
+colour = sceneColor * T + scattered
+```
+
+对未命中行星的射线（纯天空）：
+
+```
+colour = sceneColor + scattered   // 背景只接收散射光，不乘透射率
+```
+
+四个实现要点，每个都对应一次真实故障：
+
+| 要点 | 故障症状 |
+|---|---|
+| 渲染目标尺寸必须跟随绘制缓冲 | 停在 1×1 时，整个屏幕是同一个 texel 的均色，盘面与天空不可区分 |
+| 天空射线不能乘透射率 | 否则整帧被灰雾覆盖，角落从 [5,7,13] 跳到 [49,86,104] |
+| 视线方向必须用相机逆投影矩阵重建 | 用硬编码 60° 视锥时，实际 fov 是 38°，晨昏带相对受光地面错位 |
+| 散射亮度不能乘积分步数以外的项 | 否则 4/14/28 步得到 13/109/110 的亮度（步长缩放了求和） |
+
+多次散射用各向同性的衰减回波代替，且**故意不乘太阳可见性** —— 这正是夜侧边缘在现实中仍然可见的原因（光从受光侧跨过晨昏线散射过来）。
 
 ---
 
 ## 8. 可测性设计
 
-`PlanetScene.measure()` 返回的值全部来自真实数据：
-
-| 字段 | 来源 |
-|---|---|
-| `minRadius` / `maxRadius` / `relief` | 遍历 `surface.geometry.attributes.position` |
-| `landFraction` | `heightField.oceanMask` 计数 |
-| `cloudCoverage` | `measureCloudCoverage()` 在 Fibonacci 格点上重新采样噪声场 |
-| `starBandFraction` | 遍历星点位置，按实际银河面法线统计 |
-
-这是"参数真的改变了结果"能被自动化证明的前提。如果 `measure()` 只是把输入参数回显，所有敏感性测试都会变成同义反复。
+1. **测量回环**：`planet.measure()` 的每个数值都取自真实数据 —— 顶点半径算 `relief`、星点坐标算银河带占比、噪声场分位数算云量。回显输入参数会让"参数生效"这件事无法被测试。
+2. **参数 schema 单一真相**：UI、URL 编码、JSON 导出、测试的默认值全部读 `params.js`。新增一个参数不需要改四处。
+3. **静态守卫**：JS 声明的每个 uniform 必须在 GLSL 里有对应声明（反之亦然）；GLSL 内不得用保留字做变量名；模板字符串内不得有裸反引号。这三条都对应过真实故障，且**都在浏览器里表现为"画面缺一块"而不是报错**。
+4. **像素级验收**：见 `docs/TESTING.md`。盘面半径从拍摄元数据（投影公式）读取，不做图像边缘检测。
