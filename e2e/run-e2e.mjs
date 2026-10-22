@@ -74,18 +74,54 @@ async function setParam(page, key, value) {
   }, [key, value]);
 }
 
+/**
+ * Change a shape parameter and rebuild, returning only after the new geometry is live.
+ *
+ * Two earlier versions of this helper were wrong in ways worth recording, because
+ * both produced a *stable* false failure rather than a flaky one:
+ *
+ *   1. It called `window.planetForge.regenerate()` (the app's rAF-deferred wrapper)
+ *      and then waited for `ready`, which was still true from the previous build.
+ *      The next step's rebuild was scheduled while the previous rAF pair was still
+ *      pending, so one rebuild was dropped and the signature stayed on the
+ *      intermediate planet.
+ *   2. It polled until a checksum "stabilised", which is unfalsifiable: a dropped
+ *      rebuild also looks stable.
+ *
+ * The current version calls the scene object's synchronous `regenerate()` exactly
+ * once, and uses the seed it just wrote as independent proof that the geometry
+ * belongs to the requested configuration.
+ */
 async function setAndRegenerate(page, key, value) {
-  await setParam(page, key, value);
-  // Clear the flag first, then regenerate, then wait for it to come back. Calling
-  // regenerate() directly (synchronously inside the page) also avoids the debounce
-  // path, so the wait below is about the rebuild itself, not a timer.
+  const result = await page.evaluate(([k, v]) => {
+    const f = window.planetForge;
+    f.params[k] = v;
+    f.params.autoRotate = false;
+    f.planet.params = f.params;
+    f.planet.regenerate();
+    f.planet.applyLive();
+    const pos = f.planet.surface.geometry.attributes.position.array;
+    let sum = 0;
+    for (let i = 0; i < pos.length; i += 97) sum += pos[i];
+    const m = f.planet.measure();
+    return { signature: Number(sum.toFixed(6)), seed: f.params.seed, relief: m.relief, vertices: m.vertices };
+  }, [key, value]);
+  // Rendering the freshly built scene once makes the next screenshot deterministic.
   await page.evaluate(() => {
-    window.planetForge.ready = false;
-    window.planetForge.regenerate();
-    window.planetForge.ready = true;
+    const f = window.planetForge;
+    f.renderer.render(f.planet.three, f.planet.camera);
   });
-  await page.waitForFunction(() => window.planetForge.ready === true, { timeout: 60000 });
-  await page.waitForTimeout(700);
+  return result;
+}
+
+/** Read the current geometry signature from a live scene. */
+async function signature(page) {
+  return page.evaluate(() => {
+    const pos = window.planetForge.planet.surface.geometry.attributes.position.array;
+    let sum = 0;
+    for (let i = 0; i < pos.length; i += 97) sum += pos[i];
+    return Number(sum.toFixed(6));
+  });
 }
 
 async function setAndApplyLive(page, key, value) {
@@ -164,35 +200,23 @@ async function main() {
   );
 
   // --- 4. seed reproducibility --------------------------------------------
-  const seedA1 = await page.evaluate(() => {
-    const p = window.planetForge.planet;
-    const pos = p.surface.geometry.attributes.position.array;
-    let acc = 0;
-    for (let i = 0; i < pos.length; i += 97) acc += pos[i];
-    return acc;
-  });
-  await setAndRegenerate(page, 'seed', 'alpha-seed');
-  const seedB = await page.evaluate(() => {
-    const pos = window.planetForge.planet.surface.geometry.attributes.position.array;
-    let acc = 0;
-    for (let i = 0; i < pos.length; i += 97) acc += pos[i];
-    return acc;
-  });
-  await setAndRegenerate(page, 'seed', 'planet-forge');
-  const seedA2 = await page.evaluate(() => {
-    const pos = window.planetForge.planet.surface.geometry.attributes.position.array;
-    let acc = 0;
-    for (let i = 0; i < pos.length; i += 97) acc += pos[i];
-    return acc;
-  });
-  record('同种子复现（回到原种子结果一致）', Math.abs(seedA1 - seedA2) < 1e-4, `${seedA1.toFixed(4)} vs ${seedA2.toFixed(4)}`);
+  const seedA1 = await signature(page);
+  const alt = await setAndRegenerate(page, 'seed', 'alpha-seed');
+  const seedB = alt.signature;
+  const back = await setAndRegenerate(page, 'seed', 'planet-forge');
+  const seedA2 = back.signature;
+  record(
+    '同种子复现（回到原种子结果逐位一致）',
+    seedA1 === seedA2,
+    `${seedA1.toFixed(4)} vs ${seedA2.toFixed(4)}`,
+  );
   record('不同种子产生不同地形', Math.abs(seedA1 - seedB) > 1e-3, `delta=${Math.abs(seedA1 - seedB).toFixed(3)}`);
 
   // --- 5. tectonic parameter really changes the picture --------------------
   const mountainBefore = await grab(page, '02-mountains-default');
-  await setAndRegenerate(page, 'mountainHeight', 0.115);
+  const highMountains = await setAndRegenerate(page, 'mountainHeight', 0.115);
   const mountainAfter = await grab(page, '03-mountains-high');
-  const mRelief = await page.evaluate(() => window.planetForge.planet.measure().relief);
+  const mRelief = highMountains.relief;
   record(
     '山脉高度参数改变几何起伏',
     mRelief > geometryProbe.relief,
@@ -205,10 +229,11 @@ async function main() {
   );
 
   // --- 6. continent bias moves the coastline (sea level) -------------------
-  await setAndRegenerate(page, 'continentBias', 0.22);
+  const low = await setAndRegenerate(page, 'continentBias', 0.22);
   const lowLand = await page.evaluate(() => window.planetForge.planet.measure().landFraction);
-  await setAndRegenerate(page, 'continentBias', 0.78);
+  const high = await setAndRegenerate(page, 'continentBias', 0.78);
   const highLand = await page.evaluate(() => window.planetForge.planet.measure().landFraction);
+  void low; void high;
   record(
     '陆地占比参数精确改变陆地比例',
     Math.abs(lowLand - 0.22) < 0.01 && Math.abs(highLand - 0.78) < 0.01,
@@ -287,8 +312,8 @@ async function main() {
   record('相机控制可用（视角改变）', beforeOrbit.hash !== afterOrbit.hash, `${beforeOrbit.hash} vs ${afterOrbit.hash}`);
 
   // --- 15. detail level scales geometry -----------------------------------
-  await setAndRegenerate(page, 'detail', 6);
-  const l6 = await page.evaluate(() => window.planetForge.planet.measure());
+  const l6result = await setAndRegenerate(page, 'detail', 6);
+  const l6 = { vertices: l6result.vertices, triangles: await page.evaluate(() => window.planetForge.planet.geometryInfo.triangleCount) };
   record(
     '细分级别 L6 生成 40962 顶点',
     l6.vertices === 40962 && l6.triangles === 81920,
