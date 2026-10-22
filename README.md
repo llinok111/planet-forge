@@ -1,248 +1,211 @@
-[![npm version](https://badge.fury.io/js/three.terrain.js.svg)](https://www.npmjs.com/package/three.terrain.js)
+# Planet Forge
 
-`THREE.Terrain` is a **procedural terrain generation engine** for use with the
-[Three.js](https://github.com/mrdoob/three.js) 3D graphics library for the web.
+程序化 3D 星球生成器。球面**真实位移几何**（二十面体细分 + 板块构造高度场 + 热力侵蚀），叠加海洋、云层、大气散射、行星环与星空五套子系统。种子可逐位复现，所有参数都真正改变生成结果，支持 GLB / 场景 JSON / PNG 导出。
 
-#### [Try the demo](https://icecreamyou.github.io/THREE.Terrain/)!
+在线演示：`https://llinok111.github.io/planet-forge/`
 
-## Usage
+![hero](docs/images/hero.png)
 
-Install with npm (`npm install three.terrain.js`) and import as an ES module.
-You also need a compatible version of [three.js](https://www.npmjs.com/package/three)
-(r160 or later) in your project.
+---
 
-This library includes a
-[`SKILL.md` file](https://github.com/IceCreamYou/THREE.Terrain/blob/gh-pages/SKILL.md)
-to help AI agents use it. Or you can do it yourself:
+## 1. 它和"贴图球"的区别
 
-```javascript
-import * as THREE from 'three';
-import Terrain, { TerrainNS, createGrass, createSeededRandom, generateBlendedMaterial, grassMeshWeight, updateGrass, updateGrassLOD } from 'three.terrain.js';
-// Or from a local checkout: import Terrain, { TerrainNS, generateBlendedMaterial } from './src/index.js';
-```
+多数"3D 星球生成器"其实是把一张等距柱状投影贴图裹在球上。本项目不是：
 
-- `Terrain` (default export) builds a terrain mesh.
-- `TerrainNS` holds generators, filters, and other helpers (for example
-  `TerrainNS.DiamondSquare`, `TerrainNS.Smooth`, `TerrainNS.ScatterMeshes`).
-- `generateBlendedMaterial` (also available as
-  `TerrainNS.generateBlendedMaterial`) helps texture the terrain.
-- `createGrass` creates grass blades for terrain cover. Various options and
-  helpers support tints, clustering, density, swaying in the wind, etc.
-- `createSeededRandom` takes a seed and returns a function similar to
-  `Math.random()` which returns a deterministic sequence of random values based
-  on the seed. This can be passed as an option to other methods.
+| 维度 | 贴图球 | Planet Forge |
+|---|---|---|
+| 地形 | 法线贴图伪造 | 顶点半径真实位移，`relief` 实测 ≈ 0.105 星球半径 |
+| 山脉 | 画上去的 | 板块汇聚边界 + 脊状分形噪声，河谷与山脊由几何决定 |
+| 海岸线 | 贴图上画的 | 海洋球壳与地形的**真实交线**，改陆地占比海岸线跟着动 |
+| 导出 GLB | 只有一个球 + 材质 | 带位移顶点与烘焙顶点色，Blender 打开即是地形 |
+| 岛屿 | 无法产生 | 高侵蚀 + 低板块高差自然生成 |
 
-### Procedurally Generate a Terrain
+验证方式不是靠描述，而是靠测量：`npm test` 校验同一 seed 的顶点高程**逐位一致**，`node scripts/review-shots.mjs` 校验渲染出的像素确实随参数变化（见 §6）。
 
-In your own script, generate a terrain and add it to your scene:
+---
 
-```javascript
-// Generate a terrain
-var xS = 63, yS = 63;
-var terrainScene = Terrain({
-    easing: TerrainNS.Linear,
-    frequency: 2.5,
-    heightmap: TerrainNS.DiamondSquare,
-    material: new THREE.MeshBasicMaterial({color: 0x5566aa}),
-    maxHeight: 100,
-    minHeight: -100,
-    steps: 1,
-    xSegments: xS,
-    xSize: 1024,
-    ySegments: yS,
-    ySize: 1024,
-});
-// Assuming you already have your global scene, add the terrain to it
-scene.add(terrainScene);
-
-// Optional:
-// Get the geometry of the terrain across which you want to scatter meshes
-var geo = terrainScene.children[0].geometry;
-// Add randomly distributed foliage
-var decoScene = TerrainNS.ScatterMeshes(geo, {
-    mesh: new THREE.Mesh(new THREE.CylinderGeometry(2, 2, 12, 6)),
-    w: xS,
-    h: yS,
-    spread: 0.02,
-    randomness: Math.random,
-});
-terrainScene.add(decoScene);
-
-// Optional:
-// Add dense, instanced grass
-var grass = createGrass({
-    bladeCount: 20,
-    height: 9,
-    minimumLight: 0.58,
-    width: 7,
-});
-var grassScene = TerrainNS.ScatterGrass(geo, {
-    instanced: true,
-    mesh: grass,
-    // Keep mesh placement inside the fully grass-covered part of the
-    // generateBlendedMaterial layer (described below).
-    spread: function(vertex, faceIndex, faceNormal) {
-        return grassMeshWeight(vertex.z, faceNormal.angleTo(new THREE.Vector3(0, 0, 1))) > 0;
-    },
-    maxTilt: 0,
-    randomRotationAxis: 'y',
-    positionJitter: 2.5,
-    tintRange: { min: 0x496b34, max: 0x78934a },
-});
-terrainScene.add(grassScene);
-
-// In the render loop, update wind and compact distant instances before draw.
-updateGrass(grass, elapsedSeconds);
-updateGrassLOD(grassScene, camera, 1200);
-```
-
-For repeatable terrain and decoration, pass a seeded random function through
-the `random` option.:
-
-```javascript
-var terrainScene = Terrain({
-    heightmap: TerrainNS.PerlinDiamond,
-    random: createSeededRandom(12345),
-    // ...other terrain options
-});
-var decoScene = TerrainNS.ScatterMeshes(terrainScene.children[0].geometry, {
-    mesh: new THREE.Mesh(new THREE.CylinderGeometry(2, 2, 12, 6)),
-    random: createSeededRandom(67890),
-});
-```
-
-All parameters are optional and thoroughly documented in the
-[source code](https://github.com/IceCreamYou/THREE.Terrain/blob/gh-pages/src/).
-You can play around with some of the parameters and see what happens in the
-[demo](https://icecreamyou.github.io/THREE.Terrain/).
-
-Methods for generating terrain procedurally that are available by default
-include Cosine, Diamond-Square (a better version of Midpoint Displacement),
-Fault lines, Feature picking, Particle deposition, Perlin and Simplex noise,
-Value noise, Weierstrass functions, Worley noise (aka Cell or Voronoi noise),
-Brownian motion, arbitrary curves, and various combinations of those.
-
-### Exporting and Importing
-
-Export a terrain to a heightmap image:
-
-```javascript
-// Returns a canvas with the heightmap drawn on it.
-// Append to your document body to view; right click to save as a PNG image.
-var canvas = TerrainNS.toHeightmap(
-    // terrainScene.children[0] is the most detailed version of the terrain mesh
-    terrainScene.children[0].geometry.attributes.position.array,
-    { xSegments: 63, ySegments: 63 }
-);
-```
-
-The result will look something like this:
-
-![Heightmap](https://raw.githubusercontent.com/IceCreamYou/THREE.Terrain/gh-pages/demo/img/heightmap.png)
-
-If all you need is a static terrain, the easiest way to generate a heightmap is
-to use the [demo](https://icecreamyou.github.io/THREE.Terrain/) and save the
-generated heightmap that appears in the upper-left corner. The demo even has a
-"sculpt" tool to make manual modifications to the terrain. However, if you want
-to perform more custom manipulations on the terrain first, you will need to
-export the heightmap yourself.
-
-To import a heightmap, create a terrain as explained above, but pass the loaded
-heightmap image (or a canvas containing a heightmap) to the `heightmap` option
-for the `Terrain()` function (instead of passing a procedural generation
-function).
-
-Note that since the library supports seeded randomness, you may not need to
-export and import the whole terrain; instead, you might just need the seed you
-used to generate the terrain of interest.
-
-### Dynamic Terrain Materials
-
-When generating terrains procedurally, it's useful to automatically texture
-terrains based on elevation/biome, slope, and location. A utility function is
-provided that generates such a material (other than blending textures together,
-it is the same as a `MeshLambertMaterial`).
-
-```javascript
-// t1, t2, t3, and t4 must be textures, e.g. loaded using `THREE.TextureLoader.load()`.
-// The function takes an array specifying textures to blend together and how to do so.
-// The `levels` property indicates at what height to blend the texture in and out.
-// The `glsl` property allows specifying a GLSL expression for texture blending.
-var material = generateBlendedMaterial([
-    // The first texture is the base; other textures are blended in on top.
-    { texture: t1 },
-    // Start blending in at height -80; opaque between -35 and 20; blend out by 50
-    { texture: t2, levels: [-80, -35, 20, 50] },
-    { texture: t3, levels: [20, 50, 60, 85] },
-    // How quickly this texture is blended in depends on its x-position.
-    { texture: t4, glsl: '1.0 - smoothstep(65.0 + smoothstep(-256.0, 256.0, vPosition.x) * 10.0, 80.0, vPosition.z)' },
-    // Use this texture if the slope is between 27 and 45 degrees
-    { texture: t3, glsl: 'slope > 0.7853981633974483 ? 0.2 : 1.0 - smoothstep(0.47123889803846897, 0.7853981633974483, slope) + 0.2' },
-]);
-```
-
-### More
-
-Many other utilities are provided, for example for compositing different
-terrain generation methods; creating islands, cliffs, canyons, and plateaus;
-manually influencing the terrain's shape at different locations; different
-kinds of smoothing; and more. These features are all fully documented in the
-[source code](https://github.com/IceCreamYou/THREE.Terrain/tree/gh-pages/src).
-Additionally, you can create custom methods for generating terrain or affecting
-other processes.
-
-The demo uses [`@dgreenheck/ez-tree`](https://github.com/dgreenheck/ez-tree)
-(MIT licensed) for trees and bushes.
-
-### Development
-
-To run the demo locally:
+## 2. 快速开始
 
 ```bash
 npm install
-npm start
+npm run dev        # http://localhost:5180
+npm run build      # 产出 dist/
+npm test           # 单元测试（Node，无浏览器）
+npm run test:e2e   # 浏览器端到端（需先 npm run dev）
+npm run bench      # 生成性能基准
 ```
 
-This starts a Vite development server, which resolves `three` and other demo
-dependencies from `node_modules`.
+浏览器要求：支持 WebGL2 的现代浏览器。性能下限参考：SwiftShader 软件渲染下 L5 默认场景可交互。
 
-To rebuild the library bundles in `dist/`:
+---
 
-```bash
-npm run build
+## 3. 功能一览
+
+### 3.1 地形生成管线
+
+```
+二十面体细分  →  板块生长（多源 BFS）  →  板块基线 + 边界构造
+              →  域扭曲 fBm 细节  →  海平面重锚  →  热力侵蚀  →  解析法线
 ```
 
-To run the regression suite:
+- **二十面体细分**：顶点均匀分布，无极点挤压与经线接缝。L0–L7，`V = 10·4^L + 2`，`F = 20·4^L`。
+- **板块**：最远点采样布种子 → 图上多源 BFS 生长，保证板块**连通无孔洞**且面积均衡（最大/最小 < 4×）。
+- **边界构造**：按两板块质心连线与相对运动向量的点积分三类——汇聚（山脊带）、离散（裂谷）、转换（轻微抬升）。
+- **域扭曲**：低频谱采样前用第二噪声场偏移，让海岸线蜿蜒而不是贴着板块边界走。
+- **海平面重锚**：细节噪声与侵蚀都会移动高度分布，因此在**最后**按排序分位数重定海平面，使「陆地占比」精确等于滑块值（实测误差 < 0.01%）。
+- **热力侵蚀**：向最低邻居转移超陡坡度的物质，形成碎石坡与平坦谷底。坡度阈值由网格边长推导，跨细分级别表现一致。
+
+### 3.2 五套渲染子系统
+
+| 子系统 | 关键实现 | 可调参数 |
+|---|---|---|
+| 海洋 | 独立球壳，与地形同拓扑 → 真实海岸线；三层非公度重力波；深度来自地形高程属性 | 颜色/不透明度/波高/波速/粗糙度/高光 |
+| 云层 | 3D 噪声按**分位数**映射覆盖率，`coverage` 即实际天空覆盖比例（实测线性误差 0） | 云量/云厚/锐度/高度/漂移/纬度带状 |
+| 大气 | 单次散射近似，沿视线积分光学深度；`1/λ⁴` 瑞利蓝 + 米氏前向散射 + 夜侧环境光下限 | 高度/强度/瑞利色/米氏色/密度衰减/积分步数 |
+| 行星环 | 程序化环缝 + 密度波；行星投影环上、环投影行星上 | 内外半径/倾角/不透明度/环带密度/环缝深度/投影 |
+| 星空 | 三类恒星（场星/亮星/银河带），色温渐变，高次尾尺寸分布 | 数量/尺寸/亮度/银河带聚簇/色温差异/闪烁 |
+
+### 3.3 交互与导出
+
+- **相机**：OrbitControls（拖拽旋转 / 滚轮缩放 / 右键平移），带阻尼。
+- **光照**：太阳方位角 + 高度角 + 强度 + 色温；环境光强度 + 色温。太阳方向同时驱动地表、大气散射与行星环阴影投影。
+- **种子**：任意字符串；`?seed=xxx` 与全部参数一起编码进 URL，链接即场景。
+- **导出**：
+  - **GLB**：位移地形（烘焙顶点色）+ 行星环，可直接进 Blender / three.js viewer。
+  - **场景 JSON**：全部参数、环境、相机、几何统计、实测值。
+  - **PNG**：当前帧截图。
+- **快捷键**：`R` 随机星球。
+
+---
+
+## 4. 参数说明（节选）
+
+完整列表见 `src/params.js`，UI 由该表驱动，新增参数自动出现在面板 / URL / 导出中。
+
+| 参数 | 范围 | 作用 |
+|---|---|---|
+| `detail` | 3–6 | 细分级别。L5=20 480 面（默认），L6=81 920 面 |
+| `plateCount` | 4–40 | 板块数。越多，山脊带越密、地形越碎 |
+| `continentBias` | 0.1–0.9 | 陆地占比。**精确**控制海平面位置 |
+| `mountainHeight` | 0–0.12 | 汇聚边界山脊带振幅 |
+| `ridgeSharpness` | 0–1 | 山脊锐度，越大越像刀刃状山脉 |
+| `riftDepth` | 0–0.08 | 离散边界裂谷深度 |
+| `erosionIterations` | 0–80 | 热力侵蚀迭代数，越大越平缓 |
+| `cloudCoverage` | 0–1 | 云量 = 实际天空覆盖比例 |
+| `atmoRayleigh` / `atmoMie` | 色值 | 大气主色 / 前向散射暖色 |
+| `sunAzimuth` / `sunElevation` | 0–360 / −80–80 | 太阳方位，驱动全部光照与阴影 |
+
+---
+
+## 5. 架构
+
+```
+src/
+├── noise3d.js       3D Simplex（上游只有 2D）+ fBm + ridged + 域扭曲
+├── seed.js          FNV-1a 字符串哈希 → 按子系统派生子种子（9 条独立流）
+├── icosphere.js     二十面体细分 + CSR 邻接表
+├── plates.js        板块生长 + 边界分类
+├── heightfield.js   高度场合成 + 热力侵蚀 + 解析法线
+├── ocean.js         海洋球壳
+├── clouds.js        云层（CPU 分位数阈值 → GPU 3D 噪声）
+├── atmosphere.js    大气单次散射
+├── rings.js         行星环 + 互投影阴影
+├── starfield.js     星空点云
+├── shaders/biome.js 地表分带着色 GLSL
+├── planet.js        场景编排（regenerate / applyLive 两条路径）
+├── params.js        参数 schema（驱动 UI / URL / 导出 / 测试）
+├── ui.js            参数面板
+├── io.js            GLB / JSON 导出
+└── main.js          入口、渲染循环、URL 同步
+```
+
+设计要点：
+
+1. **两档更新路径**：形状参数 → 重建几何（防抖 90 ms）；外观参数 → 仅更新 uniform（拖动即时）。分错会导致"卡"或"滑块没反应"。
+2. **测量可回环**：`PlanetScene.measure()` 的数值全部取自真实数据（顶点半径、星点位置、覆盖率采样），不是把输入参数回显。
+3. **无 three.js 依赖的生成层**：`noise3d / seed / icosphere / plates / heightfield` 不 import three，因此确定性与拓扑可以在 Node 里零依赖验证。
+
+---
+
+## 6. 验证与测试
+
+### 单元测试（Node，无浏览器）
 
 ```bash
 npm test
 ```
 
-The suite uses Node's built-in test runner and the existing Playwright
-dependency. It covers seeded terrain construction, normalization callbacks,
-analysis, blended materials, instanced grass, and browser-only heightmap
-conversion.
+覆盖：拓扑正确性（欧拉示性数=2、邻接表恰为 2E 且无空洞）、种子逐位复现、**9 个形状参数逐一改变顶点高程**、陆地占比精度与单调性、侵蚀质量守恒、法线单位化与外向性、参数 schema 自洽、URL 编解码往返与越界钳制、云量线性、银河带聚簇、GLSL 模板反引号守卫。
 
-There is also a [statistics simulation](statistics/) that compares procedural
-generation methods. Run it with `npm start` and open `/statistics/`, or see
-[statistics/README.md](statistics/README.md).
-
-### Static hosting (GitHub Pages)
-
-The published npm package does not include demo assets. For this repository’s
-demo and statistics pages without Vite (for example GitHub Pages), copy runtime
-dependencies from `node_modules` into `vendor/` and commit the result:
+### 浏览器端到端
 
 ```bash
-npm install
-npm run vendor
+npm run dev          # 另一个终端
+npm run test:e2e
 ```
 
-The HTML pages use inline import maps to load `three` and `dat.gui`
-from those local copies. Re-run `npm run vendor` after bumping those
-devDependencies.
+26 项检查：着色器编译零错误、画布确有内容、种子复现、山脉/陆比/海洋/云量/大气/环带/太阳方位/星空/相机/细分级别各自改变**渲染像素**（sha1 比对）、GLB 魔数与体积、快速参数抖动后场景仍有效、连续重建无内存崩溃、移动端无横向溢出。
 
-## Screenshots
+### 视觉定量审阅
 
-![Terrain analytics, decoration controls, and high-density wind-swept grass](https://raw.githubusercontent.com/IceCreamYou/THREE.Terrain/gh-pages/demo/img/screenshot1.jpg)
-![HUD-free beach terrain showing grass meshes and blended material layers](https://raw.githubusercontent.com/IceCreamYou/THREE.Terrain/gh-pages/demo/img/screenshot2.jpg)
+```bash
+npm run shots                  # 生成 docs/images/*.png + capture-meta.json
+node scripts/review-shots.mjs  # 34 项像素级断言
+```
+
+由于本环境无法把截图交给视觉模型，画面验收以**像素测量**表达：「盘面与深空可区分」「边缘存在大气辉光」「昼夜明暗差 > 10」「arid 预设 R 占优 / ocean 预设 B 占优」「L6 近景方差 ≥ L5 中景」。盘面半径取自拍摄元数据（投影公式），不靠边缘检测猜——行星环横穿扫描线、背光时盘面比天空更暗，边缘检测在这两种情况下都会失效。
+
+---
+
+## 7. 性能
+
+`npm run bench`（Node，纯生成，不含 WebGL），本机中位数：
+
+| 细分 | 顶点 | 三角面 | 二十面体 | 高度场 | 法线 | 合计 |
+|---|---|---|---|---|---|---|
+| L3 | 642 | 1 280 | 4.6 ms | 3.5 ms | 1.5 ms | **9.7 ms** |
+| L4 | 2 562 | 5 120 | 8.9 ms | 6.7 ms | 3.3 ms | **19 ms** |
+| L5 | 10 242 | 20 480 | 30.9 ms | 33.3 ms | 7.0 ms | **71 ms** |
+| L6 | 40 962 | 81 920 | 129 ms | 140 ms | 56 ms | **326 ms** |
+
+要点：
+
+- 二十面体细分原实现每插入一个中点就复制整个 `Float64Array`（O(n²)），L5 562 ms / L6 3 657 ms。改为预分配一次填充后降到 31 ms / 129 ms（**15–28×**）。
+- 侵蚀成本随迭代数近线性：0→28 ms，20→68 ms，40→78 ms（L5）。
+- 板块数对成本几乎无影响（L5 下 8–40 块均为 ~1 ms），因为生长是 O(V+E) 的 BFS。
+
+渲染侧：`applyLive` 只改 uniform，稳定 60 fps；星点尺寸改动会重写一个 `Float32Array` 属性（9 000 星 ≈ 0.1 ms）。
+
+---
+
+## 8. 上游与许可证
+
+本项目基于 [IceCreamYou/THREE.Terrain](https://github.com/IceCreamYou/THREE.Terrain) v3.1.1（MIT，914★，pushed 2026-10-15）二次开发，**保留全部上游提交历史**（180 commits）。上游 `src/` 的 17 个模块原样保留，本项目新增的模块并列放置，入口与演示层替换。
+
+选它的理由不是 star 数，而是缺口可验证：上游 `roadmap.md` 3.1 节明确列了 *"Try simulating techtonic plates as a procedural generation method"*（原文拼写如此）指向 procedural planet generation，但从未实现；且上游 `src/noise.js` **只有 2D** Simplex/Perlin，球面采样必须 3D。这两点都在 `plates.js` / `noise3d.js` 中补齐。
+
+上游可复用的部分：`random.js` 的确定性随机流设计（本项目 `mulberry32` 与之思想一致并统一到 `noise3d.js`）、`LICENSE.txt` 原文、以及"生成层不依赖渲染层"的分层习惯。
+
+许可证：MIT，见 `LICENSE.txt`（上游原文未改动）+ `NOTICE`（本项目的衍生声明与第三方组件）。
+
+---
+
+## 9. 已知限制
+
+1. **云、大气、星空不进入 GLB**：它们的外观完全由运行时着色器注入决定，glTF 没有对应机制，导出会是空白几何体，因此只以参数形式记录在场景 JSON 里。
+2. **大气是单次散射近似**：没有多次散射与行星阴影软边，背光侧的辉光强度是经验标定值而非物理积分。
+3. **行星环是二维环面**：环粒子的垂直厚度未建模，边缘视角下环面完全平整。
+4. **热力侵蚀不是水力侵蚀**：能形成碎石坡与平坦谷底，但不产生树枝状水系。
+5. **无 LOD**：整颗行星一个细节级别，近景需要手动切 L6。
+6. **软件渲染下的视觉基线**：本项目截图在 SwiftShader 下拍摄，抗锯齿与各向异性过滤质量低于真实 GPU。
+
+---
+
+## 10. 文档
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — 模块职责、数据流、两档更新路径、为什么这样分层
+- [`docs/PARAMETERS.md`](docs/PARAMETERS.md) — 全部参数、取值含义、典型配置
+- [`docs/UPSTREAM.md`](docs/UPSTREAM.md) — 上游对比、许可证核实过程、差异清单
+- [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md) — 基准方法、数据、优化记录
+- [`docs/LIMITS.md`](docs/LIMITS.md) — 限制与取舍的完整说明
+- [`docs/TESTING.md`](docs/TESTING.md) — 测试矩阵与本轮修复的真实缺陷清单

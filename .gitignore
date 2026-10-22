@@ -1,2 +1,7 @@
 node_modules
-package-lock.json
+dist
+.vite
+coverage
+shots
+*.log
+.DS_Store

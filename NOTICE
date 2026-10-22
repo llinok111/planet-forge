@@ -1,0 +1,56 @@
+planet-forge
+============
+
+Copyright (C) 2026 planet-forge contributors
+MIT licensed. See LICENSE.txt for the full text.
+
+This software is a derivative work of:
+
+  IceCreamYou/THREE.Terrain
+  https://github.com/IceCreamYou/THREE.Terrain
+  Version 3.1.1, MIT License, Copyright (C) 2010-2014 Isaac Sukin
+  Full upstream commit history is preserved in this repository.
+
+What was taken from upstream
+----------------------------
+- The 17 modules under src/ that form the flat-terrain toolkit
+  (core.js, generators.js, filters.js, influences.js, scatter.js, grass.js,
+  materials.js, noise.js, worley.js, gaussian.js, brownian.js, analysis.js,
+  tint.js, images.js, weightedBoxBlurGaussian.js, random.js, index.js) are
+  retained unmodified for reference and potential reuse.
+- The convention that the generation layer carries no three.js dependency.
+- The deterministic random-number approach (a seeded stream passed explicitly
+  rather than replacing Math.random).
+
+What this project adds
+----------------------
+- src/noise3d.js    3D Simplex noise (upstream noise.js is 2D only), fBm,
+                    ridged multifractal, domain warping, and a lattice-offset
+                    fix for the zero-at-integer-lattice property.
+- src/seed.js       FNV-1a master seed with per-subsystem stream derivation.
+- src/icosphere.js  Icosphere subdivision with a CSR vertex-adjacency table.
+- src/plates.js     Tectonic plate growth and boundary classification
+                    (listed as an unimplemented idea in upstream roadmap.md 3.1).
+- src/heightfield.js  Spherical height field synthesis, thermal erosion,
+                    analytic displaced normals.
+- src/ocean.js, src/clouds.js, src/atmosphere.js, src/rings.js,
+  src/starfield.js   Five render subsystems.
+- src/shaders/biome.js  Elevation/slope driven biome ramping.
+- src/planet.js     Scene composition with separate rebuild and live paths.
+- src/params.js     Declarative parameter schema driving UI, URL, export, tests.
+- src/ui.js, src/io.js, src/main.js, index.html, src/style.css
+                    Application shell, panel, GLB/JSON/PNG export.
+- test/, e2e/, scripts/  Verification and benchmark harnesses.
+
+Third-party components
+----------------------
+- three.js 0.186.1            MIT
+- Vite 8.3.4                  MIT
+- Playwright 1.62 (dev only)  Apache-2.0
+
+3D Simplex noise implementation
+-------------------------------
+The algorithm in src/noise3d.js follows Stefan Gustavson's reference
+implementation (public domain), in the same lineage that upstream src/noise.js
+credits ("josephg/noisejs which is public domain"), converted to an explicit
+seeded permutation table so it can participate in deterministic reproduction.

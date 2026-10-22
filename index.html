@@ -1,149 +1,69 @@
 <!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Planet Forge — 程序化 3D 星球生成器</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="viewport">
+      <canvas id="scene"></canvas>
 
-  <title>Terrain</title>
-
-  <meta name="description" content="A demo of the THREE.Terrain library.">
-
-  <link rel="icon" href="demo/img/favicon.png"/>
-
-  <link rel="stylesheet" href="demo/index.css">
-  <link rel="stylesheet" href="vendor/dat.gui/build/dat.gui.css">
-  <!-- Define the __DEFINES__ global for Vite -->
-  <script>
-    window.__DEFINES__ = {};
-  </script>
-  <script type="importmap">
-    {
-      "imports": {
-        "three": "./vendor/three/build/three.module.js",
-        "three/": "./vendor/three/",
-        "dat.gui": "./vendor/dat.gui/build/dat.gui.module.js"
-      }
-    }
-  </script>
-</head>
-<body>
-  <canvas id="heightmap"></canvas>
-  <div id="show-analytics" class="visible">Analyze</div>
-  <div id="analytics" class="">
-    <h2>Analytics</h2>
-    <a href="https://github.com/IceCreamYou/THREE.Terrain/wiki/Analytics" class="help" target="_blank">?</a>
-    <div class="colgroup">
-      <div class="column">
-        <h3>Summary</h3>
-        <table class="analytics-group">
-          <tbody>
-            <tr class="stat"><td class="label">Elevation dispersion</td><td class="summary-value" data-property="elevation.stdev"></td></tr>
-            <tr class="stat"><td class="label">Elevation skew</td><td class="summary-value" data-property="elevation.pearsonSkew"></td></tr>
-            <tr class="stat"><td class="label">Jaggedness</td><td class="summary-value" data-property="roughness.jaggedness"></td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="column">
-        <h3 class="collapse">&nbsp;</h3>
-        <table class="analytics-group">
-          <tbody>
-            <tr class="stat"><td class="label">Slope dispersion</td><td class="summary-value" data-property="slope.stdev"></td></tr>
-            <tr class="stat"><td class="label">Slope skew</td><td class="summary-value" data-property="slope.groeneveldMeedenSkew"></td></tr>
-            <tr class="stat"><td class="label">Ruggedness</td><td class="summary-value" data-property="roughness.terrainRuggednessIndex"></td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-    <div class="colgroup">
-      <div class="column">
-        <h3>Elevation</h3>
-        <table class="analytics-group">
-          <tbody>
-            <tr class="stat"><td class="label">Sample size</td><td class="value" data-property="elevation.sampleSize"></td></tr>
-            <tr class="stat"><td class="label">Min</td><td class="value" data-property="elevation.min"></td></tr>
-            <tr class="stat"><td class="label">Max</td><td class="value" data-property="elevation.max"></td></tr>
-            <tr class="stat"><td class="label">Range</td><td class="value" data-property="elevation.range"></td></tr>
-            <tr class="stat"><td class="label">Midrange</td><td class="value" data-property="elevation.midrange"></td></tr>
-            <tr class="stat"><td class="label">Median</td><td class="value" data-property="elevation.median"></td></tr>
-            <tr class="stat"><td class="label">IQR</td><td class="value" data-property="elevation.iqr"></td></tr>
-            <tr class="stat"><td class="label">Mean</td><td class="value" data-property="elevation.mean"></td></tr>
-            <tr class="stat"><td class="label">Std dev</td><td class="value" data-property="elevation.stdev"></td></tr>
-            <tr class="stat"><td class="label">MAD</td><td class="value" data-property="elevation.mad"></td></tr>
-            <tr class="stat"><td class="label">Mode</td><td class="value" data-property="elevation.modes"></td></tr>
-            <tr class="stat"><td class="label">Pearson skew</td><td class="value" data-property="elevation.pearsonSkew"></td></tr>
-            <tr class="stat"><td class="label">G&amp;M skew</td><td class="value" data-property="elevation.groeneveldMeedenSkew"></td></tr>
-            <tr class="stat"><td class="label">Kurtosis</td><td class="value" data-property="elevation.kurtosis"></td></tr>
-            <!-- <tr class="stat empty"><td class="">&nbsp;</td><td class="">&nbsp;</td></tr> -->
-          </tbody>
-        </table>
-        <div class="histogram-container">
-          <canvas id="elevation-graph" class="histogram"></canvas>
-          <div class="graph-label">Elevation Histogram</div>
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div>
+            <h1>Planet Forge</h1>
+            <p>程序化星球生成器 · 球面高度场 + 六套子系统</p>
+          </div>
         </div>
-      </div>
-      <div class="column">
-        <h3>Slope</h3>
-        <table class="analytics-group">
-          <tbody>
-            <tr class="stat"><td class="label">Sample size</td><td class="value" data-property="slope.sampleSize"></td></tr>
-            <tr class="stat"><td class="label">Min</td><td class="value degree" data-property="slope.min"></td></tr>
-            <tr class="stat"><td class="label">Max</td><td class="value degree" data-property="slope.max"></td></tr>
-            <tr class="stat"><td class="label">Range</td><td class="value degree" data-property="slope.range"></td></tr>
-            <tr class="stat"><td class="label">Midrange</td><td class="value degree" data-property="slope.midrange"></td></tr>
-            <tr class="stat"><td class="label">Median</td><td class="value degree" data-property="slope.median"></td></tr>
-            <tr class="stat"><td class="label">IQR</td><td class="value degree" data-property="slope.iqr"></td></tr>
-            <tr class="stat"><td class="label">Mean</td><td class="value degree" data-property="slope.mean"></td></tr>
-            <tr class="stat"><td class="label">Std dev</td><td class="value degree" data-property="slope.stdev"></td></tr>
-            <tr class="stat"><td class="label">MAD</td><td class="value degree" data-property="slope.mad"></td></tr>
-            <tr class="stat"><td class="label">Mode</td><td class="value degree" data-property="slope.modes"></td></tr>
-            <tr class="stat"><td class="label">Pearson skew</td><td class="value" data-property="slope.pearsonSkew"></td></tr>
-            <tr class="stat"><td class="label">G&amp;M skew</td><td class="value" data-property="slope.groeneveldMeedenSkew"></td></tr>
-            <tr class="stat"><td class="label">Kurtosis</td><td class="value" data-property="slope.kurtosis"></td></tr>
-          </tbody>
-        </table>
-        <div class="histogram-container">
-          <canvas id="slope-graph" class="histogram"></canvas>
-          <div class="graph-label">Slope Histogram</div>
+        <div class="topbar-actions">
+          <button id="btn-random" type="button" title="随机种子 (R)">随机星球</button>
+          <button id="btn-copy" type="button" title="复制分享链接">分享链接</button>
         </div>
-      </div>
-    </div>
-    <div class="colgroup">
-      <div class="column">
-        <h3>Roughness metrics</h3>
-        <table class="analytics-group">
-          <tbody>
-            <tr class="stat"><td class="label">2D to 3D area ratio</td><td class="value" data-property="roughness.planimetricAreaRatio"></td></tr>
-            <tr class="stat"><td class="label">Ruggedness Index</td><td class="value" data-property="roughness.terrainRuggednessIndex"></td></tr>
-            <tr class="stat"><td class="label">Jaggedness</td><td class="value percent" data-property="roughness.jaggedness"></td></tr>
-          </tbody>
-        </table>
-      </div>
-      <div class="column">
-        <h3>Fitted Plane</h3>
-        <table class="analytics-group">
-          <tbody>
-            <tr class="stat"><td class="label">Slope</td><td class="value degree" data-property="fittedPlane.slope"></td></tr>
-            <tr class="stat"><td class="label">Var. explained</td><td class="value percent" data-property="fittedPlane.pctExplained"></td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-    <div>
-      <a href="#" class="close">Close</a>
-    </div>
-  </div>
-  <div id="fps">FPS: &mdash;</div>
-  <div id="code"><a href="https://github.com/IceCreamYou/THREE.Terrain" target="_blank">Fork me on GitHub</a></div>
-  <div id="fpscontrols">
-    <span class="fpscontrols-prompt">Toggle Flight mode to look around</span>
-    <span class="fpscontrols-keys">WASD/arrows move · Q/E turn · Z/X tilt · C/Space down/up · Esc release</span>
-  </div>
-  <div id="sculptcontrols" aria-hidden="true">
-    <span class="sculptcontrols-mode">SCULPT</span>
-    <span class="sculptcontrols-help">LMB raise · RMB lower · WASD/arrows move · Q/E turn · Z/X tilt · C/Space down/up · Esc release</span>
-  </div>
+      </header>
 
-  <!-- Use standard import for module loading -->
-  <script type="module" src="./demo/main.js"></script>
-</body>
+      <aside id="panel" class="panel">
+        <div class="panel-head">
+          <div class="panel-title">参数</div>
+          <div class="panel-tools">
+            <button id="btn-reset" type="button" class="ghost">重置</button>
+            <button id="btn-collapse" type="button" class="ghost" aria-label="收起面板">⟨</button>
+          </div>
+        </div>
+        <div id="groups" class="groups"></div>
+      </aside>
+
+      <button id="btn-expand" type="button" class="expand-tab" hidden>参数面板</button>
+
+      <section class="hud" id="hud" aria-live="polite">
+        <div class="hud-row"><span>顶点</span><b id="hud-verts">—</b></div>
+        <div class="hud-row"><span>三角面</span><b id="hud-tris">—</b></div>
+        <div class="hud-row"><span>地形起伏</span><b id="hud-relief">—</b></div>
+        <div class="hud-row"><span>陆地占比</span><b id="hud-land">—</b></div>
+        <div class="hud-row"><span>板块数</span><b id="hud-plates">—</b></div>
+        <div class="hud-row"><span>云量</span><b id="hud-clouds">—</b></div>
+        <div class="hud-row"><span>帧率</span><b id="hud-fps">—</b></div>
+        <div class="hud-row"><span>重建耗时</span><b id="hud-gen">—</b></div>
+      </section>
+
+      <footer class="bottombar">
+        <div class="seed-box">
+          <label for="seed-input">种子</label>
+          <input id="seed-input" type="text" spellcheck="false" autocomplete="off" />
+          <button id="btn-apply-seed" type="button">应用</button>
+        </div>
+        <div class="export-box">
+          <button id="btn-glb" type="button">导出 GLB</button>
+          <button id="btn-json" type="button">导出场景 JSON</button>
+          <button id="btn-png" type="button">截图 PNG</button>
+        </div>
+      </footer>
+
+      <div id="toast" class="toast" role="status"></div>
+      <div id="loading" class="loading"><span></span><p>正在生成星球…</p></div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
 </html>

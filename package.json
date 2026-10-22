@@ -1,61 +1,35 @@
 {
-    "name": "three.terrain.js",
-    "version": "3.1.1",
-    "description": "Extends the Three.js web-based 3D graphics framework to support generating random terrains and rendering terrain from predetermined heightmaps.",
-    "homepage": "https://github.com/IceCreamYou/THREE.Terrain",
-    "bugs": "https://github.com/IceCreamYou/THREE.Terrain/issues",
-    "type": "module",
-    "main": "./dist/three.terrain.umd.cjs",
-    "module": "./dist/three.terrain.js",
-    "exports": {
-        ".": {
-            "import": "./dist/three.terrain.js",
-            "require": "./dist/three.terrain.umd.cjs"
-        }
-    },
-    "files": [
-        "dist",
-        "src",
-        "LICENSE.txt",
-        "README.md"
-    ],
-    "scripts": {
-        "start": "vite",
-        "build": "vite build",
-        "test": "node --test",
-        "release": "node scripts/release.mjs",
-        "preview": "vite preview",
-        "screenshots": "node scripts/capture-readme-screenshots.mjs",
-        "vendor": "node scripts/vendor-deps.mjs && node scripts/build-eztree.mjs",
-        "build:eztree": "node scripts/build-eztree.mjs"
-    },
-    "directories": {
-        "lib": "dist",
-        "example": "demo"
-    },
-    "repository": {
-        "type": "git",
-        "url": "git+https://github.com/IceCreamYou/THREE.Terrain.git"
-    },
-    "keywords": [
-        "THREE",
-        "three.js",
-        "terrain",
-        "land",
-        "DiamondSquare",
-        "random",
-        "generator"
-    ],
-    "author": "Isaac Sukin (http://www.isaacsukin.com/)",
-    "license": "MIT",
-    "readmeFilename": "README.md",
-    "peerDependencies": {
-        "three": ">=0.160.0"
-    },
-    "devDependencies": {
-        "dat.gui": "^0.7.9",
-        "playwright": "^1.62.1",
-        "three": "0.186.1",
-        "vite": "8.3.4"
-    }
+  "name": "planet-forge",
+  "version": "1.0.0",
+  "description": "Procedural 3D planet generator: tectonic-plate spherical height field with oceans, clouds, atmosphere, rings and starfield. Deterministic seeds, live parameters, GLB/JSON/PNG export.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "three",
+    "threejs",
+    "procedural",
+    "planet",
+    "terrain",
+    "icosphere",
+    "tectonic",
+    "shader",
+    "webgl",
+    "generator"
+  ],
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test test/*.test.js",
+    "test:e2e": "node e2e/run-e2e.mjs",
+    "bench": "node scripts/bench.mjs",
+    "shots": "node e2e/capture-shots.mjs"
+  },
+  "dependencies": {
+    "three": "0.186.1"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1",
+    "vite": "8.3.4"
+  }
 }

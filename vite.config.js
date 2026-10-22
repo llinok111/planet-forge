@@ -1,51 +1,26 @@
 import { defineConfig } from 'vite';
-import { resolve } from 'path';
 
+/**
+ * Vite config.
+ *
+ * `base` is overridable because GitHub Pages serves the demo from
+ * `/<repo>/`, and absolute `/src/...` references would 404 there. Locally the
+ * default `/` keeps the dev server simple.
+ */
 export default defineConfig({
+  base: process.env.BASE_PATH || '/',
   server: {
-    open: true,
-    fs: {
-      allow: [
-        resolve(__dirname),
-        resolve(__dirname, 'src'),
-        resolve(__dirname, 'public'),
-        resolve(__dirname, 'demo'),
-        resolve(__dirname, 'statistics'),
-        resolve(__dirname, 'vendor'),
-        resolve(__dirname, 'node_modules'),
-      ]
-    }
+    port: 5180,
+    strictPort: true,
   },
   build: {
+    target: 'es2022',
     outDir: 'dist',
-    lib: {
-      entry: resolve(__dirname, 'src/index.js'),
-      name: 'THREE.Terrain',
-      fileName: 'three.terrain'
-    },
-    rollupOptions: {
-      external: ['three'],
-      output: {
-        globals: {
-          three: 'THREE'
-        }
-      }
-    }
+    sourcemap: false,
+    chunkSizeWarningLimit: 1200,
   },
-  define: {
-    '__DEFINES__': '{}',
-    'global': 'window'
-  },
+  // three is large; pre-bundling it keeps the dev server responsive.
   optimizeDeps: {
-    include: [
-      'three',
-      'three/examples/jsm/controls/FirstPersonControls.js',
-      'dat.gui'
-    ]
+    include: ['three'],
   },
-  root: './',
-  publicDir: 'public',
-  resolve: {
-    dedupe: ['three']
-  }
 });
